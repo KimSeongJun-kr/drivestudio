@@ -101,7 +101,7 @@ Run the following commands to set up the environment:
 
 ```shell
 # Clone the repository with submodules
-git clone --recursive https://github.com/ziyc/drivestudio.git
+git clone --recursive https://github.com/KimSeongJun-kr/drivestudio.git
 cd drivestudio
 
 # Create the environment
