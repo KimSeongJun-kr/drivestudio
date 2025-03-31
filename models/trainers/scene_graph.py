@@ -203,7 +203,7 @@ class MultiTrainer(BasicTrainer):
         Args:
             image_infos (Dict[str, torch.Tensor]): image and pixels information
             camera_infos (Dict[str, torch.Tensor]): camera information
-                        novel_view: whether the view is novel, if True, disable the camera refinement
+            novel_view: whether the view is novel, if True, disable the camera refinement
 
         Returns:
             Dict[str, torch.Tensor]: output of the model

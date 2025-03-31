@@ -18,29 +18,43 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
 
 ENV PATH=$CONDA_DIR/bin:$PATH
 
+# Initialize conda
+RUN /opt/conda/bin/conda init bash
+
 # Setup conda environment
 RUN conda create -n drivestudio python=3.9 -y
 
 # Activate conda environment
 SHELL ["conda", "run", "-n", "drivestudio", "/bin/bash", "-c"]
 
+# Add conda env bin directory to PATH
+ENV PATH="/opt/conda/envs/drivestudio/bin:$PATH"
+
 # Default working directory
 WORKDIR /workspace/drivestudio
 
-# requirements.txt 복사
+# Copy requirements.txt
 COPY requirements.txt .
+
+# ENV for pytorch3d install
+ENV FORCE_CUDA=1
+ENV TORCH_CUDA_ARCH_LIST="8.6"
+# For general settings, use below
+# TORCH_CUDA_ARCH_LIST="Turing Ampere Ada Hopper"
+
+# Install packages in requirements.txt
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt && \
     pip install git+https://github.com/nerfstudio-project/gsplat.git@v1.3.0 && \
     pip install git+https://github.com/facebookresearch/pytorch3d.git && \
     pip install git+https://github.com/NVlabs/nvdiffrast
 
-# third_party/smplx 복사 및 설치
+# Copy $ install third_party/smplx
 COPY third_party/smplx ./third_party/smplx
 WORKDIR /workspace/drivestudio/third_party/smplx
 RUN pip install .
 
-# 작업 디렉터리 초기화
+# init work directory
 WORKDIR /workspace/drivestudio
 
 CMD ["/bin/bash"]

@@ -132,15 +132,18 @@ We support most popular public driving datasets. Detailed instructions for downl
 ### Training
 ```shell
 export PYTHONPATH=$(pwd)
+project_name="test_project"
+run_name="test_run"
+scene_idx=0
 start_timestep=0 # start frame index for training
 end_timestep=-1 # end frame index, -1 for the last frame
 
-python tools/train.py \
+python -m tools.train \
     --config_file configs/omnire.yaml \
-    --output_root $output_root \
-    --project $project \
-    --run_name $expname \
-    dataset=waymo/3cams \
+    --output_root output \
+    --project $project_name \
+    --run_name $run_name \
+    dataset=nuscenes/6cams \
     data.scene_idx=$scene_idx \
     data.start_timestep=$start_timestep \
     data.end_timestep=$end_timestep

@@ -60,7 +60,7 @@ class DrivingDataset(SceneDataset):
         elif os.path.exists(os.path.join(self.data_path, "lidar_pose")):
             total_frames = len(os.listdir(os.path.join(self.data_path, "lidar_pose")))
         else:
-            raise ValueError("Unable to determine the total number of frames. Neither 'ego_pose' nor 'lidar_pose' directories found.")
+            raise ValueError("Unable to determine the total number of frames. Neither 'ego_pose' nor 'lidar_pose' directories found in "+self.data_path)
 
         # ---- find the number of synchronized frames ---- #
         if self.data_cfg.end_timestep == -1:

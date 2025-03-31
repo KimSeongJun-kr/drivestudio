@@ -30,7 +30,7 @@ To process the 10 scenes in NuScenes **v1.0-mini split**, you can run:
 
 ```shell
 # export PYTHONPATH=\path\to\project
-python datasets/preprocess.py \
+python -m datasets.preprocess \
     --data_root data/nuscenes/raw \
     --target_dir data/nuscenes/processed \
     --dataset nuscenes \
