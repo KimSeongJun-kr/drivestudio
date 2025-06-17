@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from pyquaternion import Quaternion
+import open3d as o3d
 
 from nuscenes import NuScenes
 from nuscenes.eval.detection.evaluate import NuScenesEval
@@ -359,147 +362,309 @@ def read_nus_ann_file(dataroot: str, version: str) -> List[Annotation]:
         ))
     return result
 
-def write_nus_ann_file(updated_ann: List[Annotation], output_path: str) -> None:
-    """수정된 Annotation 객체 리스트를 NuScenes 포맷의 JSON 파일로 저장합니다.
+def get_box_corners(translation, size, rotation):
+    """3D 박스의 8개 꼭짓점을 계산합니다.
     
     Args:
-        updated_ann: 수정된 Annotation 객체 리스트
-        output_path: 저장할 파일 경로
-    """
-    
-    annotations = []
-    for ann in updated_ann:
-        ann_dict = OrderedDict([
-            ('token', ann.token),
-            ('sample_token', ann.sample_token),
-            ('instance_token', ann.instance_token),
-            ('visibility_token', ann.visibility_token),
-            ('attribute_tokens', ann.attribute_tokens),
-            ('translation', [float(x) for x in ann.translation]),
-            ('size', [float(x) for x in ann.size]),
-            ('rotation', [float(x) for x in ann.rotation]),
-            ('prev', ann.prev),
-            ('next', ann.next),
-            ('num_lidar_pts', ann.num_lidar_pts),
-            ('num_radar_pts', ann.num_radar_pts)
-        ])
-        annotations.append(ann_dict)
-    
-    with open(output_path, 'w') as f:
-        json.dump(annotations, f, indent=2)
-
-def update_nus_ann_file(original_ann: List[Annotation], all_matched_pred_boxes: Dict[str, List[Tuple[str, DetectionBox]]]) -> Tuple[List[Annotation], List[Annotation]]:
-    """원본 annotation을 예측 결과로 업데이트합니다.
-    
-    Args:
-        original_ann: 원본 Annotation 객체 리스트
-        all_matched_pred_boxes: 매칭된 예측 박스 정보 (sample_token -> [(ann_token, pred_box)])
+        translation: [x, y, z] 중심점
+        size: [width, length, height] 크기
+        rotation: [w, x, y, z] 쿼터니언
         
     Returns:
-        Tuple[List[Annotation], List[Annotation]]: 
-            - 첫 번째: 업데이트된 전체 Annotation 객체 리스트
-            - 두 번째: 매칭된 예측 박스들로만 구성된 Annotation 객체 리스트
+        8x3 numpy array: 8개 꼭짓점의 좌표
     """
-    # ann_token을 키로 하는 딕셔너리 생성
-    ann_dict = {ann.token: ann for ann in original_ann}
-    matched_ann_list = []
+    w, l, h = size
     
-    # 매칭된 예측 박스 정보로 annotation 업데이트
-    for sample_token, matched_boxes in all_matched_pred_boxes.items():
-        for ann_token, pred_box in matched_boxes:
-            if ann_token in ann_dict:
-                ann = ann_dict[ann_token]
-                # 예측된 박스 정보로 업데이트
-                ann.translation = pred_box.translation
-                ann.size = pred_box.size
-                ann.rotation = pred_box.rotation
-                # 매칭된 annotation을 별도 리스트에 추가
-                matched_ann_list.append(ann)
+    # 로컬 좌표계에서의 8개 꼭짓점 (중심이 원점)
+    corners_local = np.array([
+        [-l/2, -w/2, -h/2],  # 0: 좌하후
+        [l/2, -w/2, -h/2],   # 1: 우하후
+        [l/2, w/2, -h/2],    # 2: 우상후
+        [-l/2, w/2, -h/2],   # 3: 좌상후
+        [-l/2, -w/2, h/2],   # 4: 좌하전
+        [l/2, -w/2, h/2],    # 5: 우하전
+        [l/2, w/2, h/2],     # 6: 우상전
+        [-l/2, w/2, h/2]     # 7: 좌상전
+    ])
     
-    return list(ann_dict.values()), matched_ann_list
+    # pyquaternion을 사용하여 회전 적용
+    q = Quaternion(rotation)  # [w, x, y, z] 순서
+    rotation_matrix = q.rotation_matrix
+    # 올바른 회전 변환: (rotation_matrix @ corners.T).T
+    corners_rotated = (rotation_matrix @ corners_local.T).T
     
-def visualize_ego_translations_3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes, save_path: str = None) -> None:
-    """pred_boxes와 gt_boxes의 ego_translation을 3D로 시각화합니다.
+    # 평행이동 적용
+    corners_world = corners_rotated + np.array(translation)
+    
+    return corners_world
+
+def draw_3d_box(ax, corners, color='blue', alpha=0.3, edge_color='black'):
+    """3D 박스를 그립니다.
     
     Args:
-        pred_boxes: 예측 박스들
-        gt_boxes: Ground truth 박스들  
-        save_path: 이미지를 저장할 경로 (None이면 화면에 출력)
+        ax: matplotlib 3D axis
+        corners: 8x3 numpy array, 박스의 8개 꼭짓점
+        color: 박스 면의 색상
+        alpha: 투명도
+        edge_color: 테두리 색상
     """
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    # 12개의 면을 정의 (각 면은 4개의 꼭짓점으로 구성)
+    faces = [
+        [corners[0], corners[1], corners[2], corners[3]],  # 아래면
+        [corners[4], corners[5], corners[6], corners[7]],  # 위면
+        [corners[0], corners[1], corners[5], corners[4]],  # 앞면
+        [corners[2], corners[3], corners[7], corners[6]],  # 뒷면
+        [corners[1], corners[2], corners[6], corners[5]],  # 오른쪽면
+        [corners[4], corners[7], corners[3], corners[0]]   # 왼쪽면
+    ]
     
-    # Prediction boxes의 ego_translation 수집
-    pred_translations = []
+    # Poly3DCollection을 사용해서 면들을 그리기
+    poly3d = [[tuple(face[j]) for j in range(len(face))] for face in faces]
+    ax.add_collection3d(Poly3DCollection(poly3d, 
+                                        facecolors=color, 
+                                        linewidths=1, 
+                                        edgecolors=edge_color,
+                                        alpha=alpha))
+
+# ===========================
+# Open3D 시각화 유틸리티
+# ===========================
+
+# Open3D LineSet 생성을 위한 에지 인덱스 (12개)
+OPEN3D_BOX_LINES = [
+    [0, 1], [1, 2], [2, 3], [3, 0],  # 아래면
+    [4, 5], [5, 6], [6, 7], [7, 4],  # 위면
+    [0, 4], [1, 5], [2, 6], [3, 7]   # 옆면
+]
+
+# -----------------------------
+# NEW: Helper for front center sphere
+# -----------------------------
+
+def create_open3d_sphere(center: np.ndarray, radius: float, color: Tuple[float, float, float]) -> o3d.geometry.TriangleMesh:
+    """지정한 중심과 색상의 구(Sphere) Mesh를 생성합니다.
+
+    Args:
+        center (np.ndarray): 중심 좌표 (3,)
+        radius (float): 구의 반지름
+        color (Tuple[float, float, float]): RGB 컬러 (0~1)
+
+    Returns:
+        o3d.geometry.TriangleMesh: 시각화용 Sphere Mesh
+    """
+    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
+    sphere.translate(center)
+    sphere.paint_uniform_color(color)
+    return sphere
+
+def create_open3d_box(corners: np.ndarray, color: Tuple[float, float, float]) -> o3d.geometry.LineSet:
+    """8개 꼭짓점 정보로부터 Open3D LineSet(육면체) 객체를 생성합니다.
+
+    Args:
+        corners (np.ndarray): (8, 3) 형태의 꼭짓점 좌표
+        color (Tuple[float, float, float]): RGB 컬러 (0~1)
+
+    Returns:
+        o3d.geometry.LineSet: 시각화용 LineSet
+    """
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector(corners)
+    line_set.lines = o3d.utility.Vector2iVector(OPEN3D_BOX_LINES)
+    line_set.colors = o3d.utility.Vector3dVector([color for _ in OPEN3D_BOX_LINES])
+    return line_set
+
+
+# noinspection PyBroadException
+def visualize_ego_translations_open3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes, scene_name: str = None,
+                                      score_threshold: float = None, save_path: str = None, max_boxes: int = -1) -> None:
+    """Open3D를 이용하여 pred_boxes와 gt_boxes를 3D로 시각화합니다.
+
+    Args:
+        pred_boxes: 예측 박스들
+        gt_boxes: Ground truth 박스들
+        scene_name: (선택) scene 이름 (제목 표시용)
+        score_threshold: (선택) score threshold (제목 표시용)
+    """
+
+    geometries = []
+
+    # Coordinate frame 추가
+    geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0))
+
+    pred_count, gt_count = 0, 0
+    center_translation = None
+
+    # 첫 번째 박스의 translation을 center로 설정
     for sample_token in pred_boxes.sample_tokens:
         for box in pred_boxes[sample_token]:
-            if hasattr(box, 'translation') and box.translation is not None:
-                # translation = (box.translation[0], box.translation[1], box.translation[2])
-                translation = (box.translation[0], -box.translation[2], box.translation[1])
-                pred_translations.append(translation)
-    
-    # Ground truth boxes의 ego_translation 수집  
-    gt_translations = []
-    center_point = gt_boxes[gt_boxes.sample_tokens[0]][0].translation
+            if (hasattr(box, 'translation') and box.translation is not None and
+                    hasattr(box, 'size') and box.size is not None and
+                    hasattr(box, 'rotation') and box.rotation is not None):
+                center_translation = np.array(box.translation)
+                break
+        if center_translation is not None:
+            break
+
+    if center_translation is None:
+        print("기준이 될 박스를 찾을 수 없습니다.")
+        return
+
+    # Prediction boxes (Red)
+    for sample_token in pred_boxes.sample_tokens:
+        for box in pred_boxes[sample_token]:
+            if max_boxes > 0 and pred_count >= max_boxes:
+                break  # 개수 제한 도달
+            if (hasattr(box, 'translation') and box.translation is not None and
+                    hasattr(box, 'size') and box.size is not None and
+                    hasattr(box, 'rotation') and box.rotation is not None):
+                
+                # center 기준으로 상대 위치 계산
+                relative_translation = np.array(box.translation) - center_translation
+                corners = get_box_corners(relative_translation, box.size, box.rotation)
+                geometries.append(create_open3d_box(corners, (1.0, 0.0, 0.0)))  # Red
+
+                # NEW: 앞면 중심점 시각화 (Red)
+                # front_center = np.mean(corners[4:8], axis=0)
+                front_center = (corners[1] + corners[6]) / 2 
+                geometries.append(create_open3d_sphere(front_center, radius=0.1, color=(1.0, 0.0, 0.0)))
+
+                pred_count += 1
+        if max_boxes > 0 and pred_count >= max_boxes:
+            break
+
+    # Ground truth boxes (Blue)
     for sample_token in gt_boxes.sample_tokens:
         for box in gt_boxes[sample_token]:
-            if hasattr(box, 'translation') and box.translation is not None:
-                translation = (box.translation[0] - center_point[0], box.translation[1] - center_point[1], box.translation[2] - center_point[2])
-                gt_translations.append(translation)
-    
-    # numpy 배열로 변환
-    if pred_translations:
-        pred_translations = np.array(pred_translations)
-        ax.scatter(pred_translations[:, 0], pred_translations[:, 1], pred_translations[:, 2], 
-                  c='red', marker='o', s=20, alpha=0.6, label=f'Predictions ({len(pred_translations)})')
-    
-    if gt_translations:
-        gt_translations = np.array(gt_translations)
-        ax.scatter(gt_translations[:, 0], gt_translations[:, 1], gt_translations[:, 2],
-                  c='blue', marker='^', s=20, alpha=0.6, label=f'Ground Truth ({len(gt_translations)})')
-    
-    # 축 라벨 설정
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)') 
-    ax.set_zlabel('Z (m)')
-    ax.set_title('3D Visualization of Ego Translations\n(Predictions vs Ground Truth)')
-    
-    # 범례 추가
-    ax.legend()
-    
-    # 격자 표시
-    ax.grid(True, alpha=0.3)
-    
-    # 축 비율 조정
-    if pred_translations is not None and len(pred_translations) > 0:
-        all_translations = pred_translations
-        if gt_translations is not None and len(gt_translations) > 0:
-            all_translations = np.vstack([pred_translations, gt_translations])
-    elif gt_translations is not None and len(gt_translations) > 0:
-        all_translations = gt_translations
-    else:
-        print("시각화할 데이터가 없습니다.")
+            if max_boxes > 0 and gt_count >= max_boxes:
+                break  # 개수 제한 도달
+            if (hasattr(box, 'translation') and box.translation is not None and
+                    hasattr(box, 'size') and box.size is not None and
+                    hasattr(box, 'rotation') and box.rotation is not None):
+
+                # center 기준으로 상대 위치 계산
+                relative_translation = np.array(box.translation) - center_translation
+                corners = get_box_corners(relative_translation, box.size, box.rotation)
+                geometries.append(create_open3d_box(corners, (0.0, 0.0, 1.0)))  # Blue
+
+                # NEW: 앞면 중심점 시각화 (Blue)
+                # front_center = np.mean(corners[4:8], axis=0)
+                front_center = (corners[1] + corners[6]) / 2 
+                geometries.append(create_open3d_sphere(front_center, radius=0.1, color=(0.0, 0.0, 1.0)))
+
+                gt_count += 1
+        if max_boxes > 0 and gt_count >= max_boxes:
+            break
+
+    if pred_count == 0 and gt_count == 0:
+        print("시각화할 박스가 없습니다.")
         return
-        
-    # 축 범위 설정
-    margin = 10.0  # 여백
-    x_range = [all_translations[:, 0].min() - margin, all_translations[:, 0].max() + margin]
-    y_range = [all_translations[:, 1].min() - margin, all_translations[:, 1].max() + margin]
-    z_range = [all_translations[:, 2].min() - margin, all_translations[:, 2].max() + margin]
-    
-    ax.set_xlim(x_range)
-    ax.set_ylim(y_range)
-    ax.set_zlim(z_range)
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"3D 시각화가 {save_path}에 저장되었습니다.")
-    else:
-        plt.show()
-    
-    plt.close()
+
+    # 윈도우 이름 설정
+    window_name = "Open3D Visualization of Detection Boxes"
+    subtitle_parts = []
+    if scene_name:
+        subtitle_parts.append(f"Scene: {scene_name}")
+    if score_threshold is not None and score_threshold > 0:
+        subtitle_parts.append(f"Score≥{score_threshold}")
+    subtitle_parts.append(f"Pred: {pred_count}, GT: {gt_count}")
+    if subtitle_parts:
+        window_name += " (" + " | ".join(subtitle_parts) + ")"
+
+    # ---------------------------
+    # 시각화 (온스크린 or 오프스크린)
+    # ---------------------------
+
+    # 1) 오프스크린 렌더링 모드가 필요한 경우 (save_path 지정 or GUI 사용 불가)
+    if save_path is not None:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(visible=False)
+        for g in geometries:
+            vis.add_geometry(g)
+        vis.poll_events()
+        vis.update_renderer()
+        vis.capture_screen_image(save_path)
+        vis.destroy_window()
+        print(f"✅ 3D 시각화 결과가 '{save_path}' 로 저장되었습니다.")
+        return
+
+    # 2) 일반 윈도우 모드 (GUI 가능 환경)
+    try:
+        o3d.visualization.draw_geometries(geometries, window_name=window_name)
+    except Exception as e:
+        print("⚠️ Open3D GUI 창 생성에 실패했습니다. (Headless 환경으로 판단)\n   → 오류 메시지:", e)
+        print("대신 오프스크린 모드로 이미지를 저장합니다. '--save_plot <경로>' 인자를 지정하세요.")
+
+# -----------------------------------------------------------------------------
+# 박스 필터링 유틸리티 (Score / Scene)
+# -----------------------------------------------------------------------------
+
+def filter_boxes_by_score(boxes: EvalBoxes, score_threshold: float) -> EvalBoxes:
+    """detection_score가 threshold 이상인 boxes만 필터링합니다.
+
+    Args:
+        boxes: 필터링할 EvalBoxes
+        score_threshold: score threshold (이 값 이상인 박스들만 유지)
+
+    Returns:
+        필터링된 EvalBoxes
+    """
+    filtered_boxes = EvalBoxes()
+    total_boxes = 0
+    filtered_count = 0
+
+    for sample_token in boxes.sample_tokens:
+        sample_boxes = []
+        for box in boxes[sample_token]:
+            total_boxes += 1
+            if hasattr(box, 'detection_score') and box.detection_score >= score_threshold:
+                sample_boxes.append(box)
+                filtered_count += 1
+
+        if sample_boxes:  # 필터링된 박스가 있는 경우만 추가
+            filtered_boxes.add_boxes(sample_token, sample_boxes)
+
+    print(f"✅ Score {score_threshold} 이상인 박스: {filtered_count}/{total_boxes}개")
+    return filtered_boxes
+
+
+def filter_boxes_by_scene(nusc: NuScenes, boxes: EvalBoxes, scene_name: str) -> EvalBoxes:
+    """특정 scene에 해당하는 boxes만 필터링합니다.
+
+    Args:
+        nusc: NuScenes 객체
+        boxes: 필터링할 EvalBoxes
+        scene_name: 필터링할 scene 이름 (예: 'scene-0061')
+
+    Returns:
+        필터링된 EvalBoxes
+    """
+    # scene 이름으로 scene 찾기
+    scene_token = None
+    for scene in nusc.scene:
+        if scene['name'] == scene_name:
+            scene_token = scene['token']
+            break
+
+    if scene_token is None:
+        print(f"⚠️ Scene '{scene_name}'을 찾을 수 없습니다.")
+        return EvalBoxes()
+
+    # 해당 scene의 sample_tokens 가져오기
+    scene_sample_tokens = []
+    for sample_token in boxes.sample_tokens:
+        sample = nusc.get('sample', sample_token)
+        if sample['scene_token'] == scene_token:
+            scene_sample_tokens.append(sample_token)
+
+    # 필터링된 박스들로 새로운 EvalBoxes 생성
+    filtered_boxes = EvalBoxes()
+    for sample_token in scene_sample_tokens:
+        if sample_token in boxes.sample_tokens:
+            filtered_boxes.add_boxes(sample_token, boxes[sample_token])
+
+    print(f"✅ Scene '{scene_name}'에서 {len(scene_sample_tokens)}개의 샘플을 찾았습니다.")
+    return filtered_boxes
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -508,6 +673,7 @@ def main() -> None:
         "--pred",
         type=str,
         default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/keyframe_instance_poses_data/all_poses.json",
+        # default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/test/results_nusc.json",
         help="Path to prediction json",
     )
     parser.add_argument(
@@ -534,6 +700,24 @@ def main() -> None:
         default=None,
         help="Path to save the 3D visualization plot"
     )
+    parser.add_argument(
+        "--scene_name",
+        type=str,
+        default='scene-0061',
+        help="Scene name to filter boxes"
+    )
+    parser.add_argument(
+        "--score_threshold",
+        type=float,
+        default=0.5,
+        help="Minimum detection score threshold for pred_boxes"
+    )
+    parser.add_argument(
+        "--max_boxes",
+        type=int,
+        default=500,
+        help="시각화할 최대 박스 개수 (<=0 이면 제한 없음)"
+    )
 
     args = parser.parse_args()
 
@@ -553,21 +737,24 @@ def main() -> None:
                                         verbose=args.verbose)
 
     gt_boxes, sample_ann_tokens = load_gt(nusc, eval_set_map[args.version], DetectionBox, verbose=args.verbose)
-
+    
+    # Filter pred_boxes by score
+    if args.score_threshold > 0:
+        print(f"📊 Score threshold {args.score_threshold}로 pred_boxes 필터링 중...")
+        pred_boxes = filter_boxes_by_score(pred_boxes, args.score_threshold)
+    
+    # Filter boxes by scene
+    if args.scene_name:
+        pred_boxes = filter_boxes_by_scene(nusc, pred_boxes, args.scene_name)
+        gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, args.scene_name)
+    
     assert set(pred_boxes.sample_tokens) == set(gt_boxes.sample_tokens), \
         "Samples in split doesn't match samples in predictions."
+
     
-    # Add center distances.
-    # pred_boxes = add_center_dist(nusc, pred_boxes)
-    for sample_token in pred_boxes.sample_tokens:
-        for box in pred_boxes[sample_token]:
-            box.ego_translation = box.translation
-                
-    gt_boxes = add_center_dist(nusc, gt_boxes)
-    
-    # 3D 시각화
-    print("3D 시각화를 생성하고 있습니다...")
-    visualize_ego_translations_3d(pred_boxes, gt_boxes, args.save_plot)
+    # Open3D 3D 시각화
+    print("Open3D 3D 시각화를 생성하고 있습니다...")
+    visualize_ego_translations_open3d(pred_boxes, gt_boxes, args.scene_name, args.score_threshold, args.save_plot, args.max_boxes)
 
 if __name__ == "__main__":
     main()
