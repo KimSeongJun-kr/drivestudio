@@ -7,32 +7,43 @@ docker run --gpus all -it --shm-size=16g --env DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "/home/aimlab/seongjun_ws/docker_ws/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
     -v "/media/aimlab/HDD02_1TB:/workspace/drivestudio/data" \
+    --name drivestudio \
     drivestudio:0.0.1 /bin/bash
 
 ## (Every Time) Activate Conda Environment
 conda activate drivestudio
 
-
 # 3. Run OmniRe training
 ## Set Configuration
-PROJECT_NAME="test_project"
-RUN_NAME="test_run_0331_1"
-# DATASET_DIR=/data/my_desk
-# DATASET_DIR=/data/example_dataset_tmp
-# DATASET_DIR=/data/lab_room
-# DATASET_DIR="/media/aimlab/SSD_3DGS/3DGS/toy_dataset/example_dataset"
-# DATASET_DIR="/media/aimlab/SSD_3DGS/3DGS/toy_dataset/my_desk"
-
+PROJECT_NAME="feasibility_check"
+RUN_NAME="run_updated_scene_0_date_0529_try_1"
+DATASET_NAME="nuscenes/6cams_update"
 ## Optimization
 python -m tools.train \
     --config_file configs/omnire.yaml \
     --output_root output \
     --project ${PROJECT_NAME} \
     --run_name ${RUN_NAME} \
-    dataset=nuscenes/6cams \
+    dataset=${DATASET_NAME} \
     data.scene_idx=0 \
     data.start_timestep=0 \
     data.end_timestep=-1
 
-# # 4. Visualize
+# 4. Run 3D Bounding Box evaluation
+## 코드 수정
+file "/opt/conda/lib/python3.7/site-packages/nuscenes/utils/splits.py"
+line 150: 'mini_val = mini_val + mini_train' 추가
+## Run Evaluation
+python seongjun_tools/evaluate_3dbb.py \
+    --pred /workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/keyframe_instance_poses_data/all_poses.json \
+    --version v1.0-mini \
+    --dataroot /workspace/drivestudio/data/nuscenes/raw \
+    --verbose True
+
+# 4. Visualize
+# DATASET_DIR=/data/my_desk
+# DATASET_DIR=/data/example_dataset_tmp
+# DATASET_DIR=/data/lab_room
+# DATASET_DIR="/media/aimlab/SSD_3DGS/3DGS/toy_dataset/example_dataset"
+# DATASET_DIR="/media/aimlab/SSD_3DGS/3DGS/toy_dataset/my_desk"
 # SIBR_viewers/install/bin/SIBR_gaussianHierarchyViewer_app --path ${DATASET_DIR}/camera_calibration/aligned --scaffold ${DATASET_DIR}/output/scaffold/point_cloud/iteration_30000 --model-path ${DATASET_DIR}/output/merged.hier --images-path ${DATASET_DIR}/camera_calibration/rectified/images

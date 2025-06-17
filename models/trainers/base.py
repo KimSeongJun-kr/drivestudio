@@ -707,7 +707,7 @@ class BasicTrainer(nn.Module):
         Save model to checkpoint.
         """
         if is_final:
-            ckpt_path = os.path.join(log_dir, f"checkpoint_final.pth")
+            ckpt_path = os.path.join(log_dir, f"checkpoint_{self.step:05d}_final.pth")
         else:
             ckpt_path = os.path.join(log_dir, f"checkpoint_{self.step:05d}.pth")
         torch.save(self.state_dict(only_model=save_only_model), ckpt_path)

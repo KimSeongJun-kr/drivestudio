@@ -138,6 +138,7 @@ scene_idx=0
 start_timestep=0 # start frame index for training
 end_timestep=-1 # end frame index, -1 for the last frame
 
+# python tools/train.py \
 python -m tools.train \
     --config_file configs/omnire.yaml \
     --output_root output \
