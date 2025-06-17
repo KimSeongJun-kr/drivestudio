@@ -241,8 +241,8 @@ class NuScenesPixelSource(ScenePixelSource):
             for frame_idx, obj_to_world, box_size in zip(v["frame_annotations"]["frame_idx"], v["frame_annotations"]["obj_to_world"], v["frame_annotations"]["box_size"]):
                 # the first ego pose as the origin of the world coordinate system.
                 obj_to_world = np.array(obj_to_world).reshape(4, 4)
-                obj_to_world = np.linalg.inv(camera_front_start) @ obj_to_world
-                instances_pose[frame_idx, int(k)] = np.array(obj_to_world)
+                obj_to_camera = np.linalg.inv(camera_front_start) @ obj_to_world
+                instances_pose[frame_idx, int(k)] = np.array(obj_to_camera)
                 instances_size[frame_idx, int(k)] = np.array(box_size)
         
         # get frame valid instances
