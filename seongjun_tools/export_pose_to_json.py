@@ -152,7 +152,7 @@ def transform_pose_to_world(translation: np.ndarray, rotation: np.ndarray, camer
     
     return world_translation, world_rotation_quat
 
-def extract_rigid_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene_name: str, sample_tokens: List[str] = None, camera_front_start: Optional[np.ndarray] = None) -> List[PoseAnnotation]:
+def extract_rigid_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene_name: str, sample_tokens: Optional[List[str]] = None, camera_front_start: Optional[np.ndarray] = None) -> List[PoseAnnotation]:
     """RigidNodes 포즈 데이터 추출 (5의 배수 프레임만)"""
     rigid_quats = checkpoint['models']['RigidNodes']['instances_quats'].numpy() # (num_frames, num_instances, 4)
     rigid_trans = checkpoint['models']['RigidNodes']['instances_trans'].numpy() # (num_frames, num_instances, 3)
@@ -177,6 +177,10 @@ def extract_rigid_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scen
             
             translation = rigid_trans[frame_id, instance_id]
             rotation = rigid_quats[frame_id, instance_id]
+            
+            # translation이 [0, 0, 0]인 경우 건너뛰기
+            if np.allclose(translation, [0, 0, 0], atol=1e-6):
+                continue
             
             # camera 좌표계에서 world 좌표계로 변환
             if camera_front_start is not None:
@@ -213,7 +217,7 @@ def extract_rigid_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scen
     
     return annotations
 
-def extract_smpl_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene_name: str, sample_tokens: List[str] = None, camera_front_start: Optional[np.ndarray] = None) -> List[PoseAnnotation]:
+def extract_smpl_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene_name: str, sample_tokens: Optional[List[str]] = None, camera_front_start: Optional[np.ndarray] = None) -> List[PoseAnnotation]:
     """SMPLNodes 포즈 데이터 추출 (5의 배수 프레임만)"""
     smpl_instance_quats = checkpoint['models']['SMPLNodes']['instances_quats'].numpy()  # (num_frames, num_instances, 1, 4)
     smpl_instance_trans = checkpoint['models']['SMPLNodes']['instances_trans'].numpy()  # (num_frames, num_instances, 3)
@@ -238,6 +242,10 @@ def extract_smpl_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene
             
             translation = smpl_instance_trans[frame_id, instance_id]
             rotation = smpl_instance_quats[frame_id, instance_id, 0]  # (1, 4) -> (4,)
+            
+            # translation이 [0, 0, 0]인 경우 건너뛰기
+            if np.allclose(translation, [0, 0, 0], atol=1e-6):
+                continue
             
             # camera 좌표계에서 world 좌표계로 변환
             if camera_front_start is not None:
@@ -274,7 +282,7 @@ def extract_smpl_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene
     
     return annotations
 
-def extract_deformable_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene_name: str, sample_tokens: List[str] = None, camera_front_start: Optional[np.ndarray] = None) -> List[PoseAnnotation]:
+def extract_deformable_nodes_poses(checkpoint: Dict[str, Any], scene_token: str, scene_name: str, sample_tokens: Optional[List[str]] = None, camera_front_start: Optional[np.ndarray] = None) -> List[PoseAnnotation]:
     """DeformableNodes 포즈 데이터 추출 (5의 배수 프레임만)"""
     deform_quats = checkpoint['models']['DeformableNodes']['instances_quats'].numpy()  # (num_frames, num_instances, 4)
     deform_trans = checkpoint['models']['DeformableNodes']['instances_trans'].numpy()  # (num_frames, num_instances, 3)
@@ -300,6 +308,10 @@ def extract_deformable_nodes_poses(checkpoint: Dict[str, Any], scene_token: str,
             
             translation = deform_trans[frame_id, instance_id]
             rotation = deform_quats[frame_id, instance_id]
+            
+            # translation이 [0, 0, 0]인 경우 건너뛰기
+            if np.allclose(translation, [0, 0, 0], atol=1e-6):
+                continue
             
             # camera 좌표계에서 world 좌표계로 변환
             if camera_front_start is not None:
