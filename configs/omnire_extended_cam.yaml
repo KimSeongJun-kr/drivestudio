@@ -1,11 +1,11 @@
 seed: 0
-dataset: waymo/3cams
+dataset: nuscenes/6cams_update
 
 # ------------- Trainer ------------ #
 trainer:
   type: models.trainers.MultiTrainer
   optim:
-    num_iters: 40000
+    num_iters: 80000
     use_grad_scaler: false
     cache_buffer_freq: 2000 # we use error based image sampler for training with more than 3 cameras
   render:

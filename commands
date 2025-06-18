@@ -3,10 +3,12 @@ docker build -t drivestudio:0.0.1 .
 
 # 2. Environment Setup
 ## Run Docker Container
-docker run --gpus all -it --shm-size=16g --env DISPLAY=$DISPLAY \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
+xhost +local:root
+docker run --gpus all -it --shm-size=16g \
     -v "/home/aimlab/seongjun_ws/docker_ws/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
     -v "/media/aimlab/HDD02_1TB:/workspace/drivestudio/data" \
+    -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -e NVIDIA_DRIVER_CAPABILITIES=all \
     --name drivestudio \
     drivestudio:0.0.1 /bin/bash
 
@@ -15,10 +17,19 @@ conda activate drivestudio
 
 # 3. Run OmniRe training
 ## Set Configuration
-PROJECT_NAME="feasibility_check"
-RUN_NAME="run_updated_scene_0_date_0529_try_1"
+PROJECT_NAME="feasibility_check_0618"
+RUN_NAME="run_updated_scene_0_date_0618_try_1"
 DATASET_NAME="nuscenes/6cams_update"
 ## Optimization
+python -m tools.train \
+    --config_file configs/omnire_extended_cam.yaml \
+    --output_root output \
+    --project ${PROJECT_NAME} \
+    --run_name ${RUN_NAME} \
+    dataset=${DATASET_NAME} \
+    data.scene_idx=0 \
+    data.start_timestep=0 \
+    data.end_timestep=-1
 python -m tools.train \
     --config_file configs/omnire.yaml \
     --output_root output \
@@ -28,7 +39,6 @@ python -m tools.train \
     data.scene_idx=0 \
     data.start_timestep=0 \
     data.end_timestep=-1
-
 # 4. Run 3D Bounding Box evaluation
 ## 코드 수정
 file "/opt/conda/lib/python3.7/site-packages/nuscenes/utils/splits.py"
