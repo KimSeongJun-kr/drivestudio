@@ -748,11 +748,6 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
                 os.makedirs(save_dir, exist_ok=True)
                 print(f"📁 디렉토리 생성: {save_dir}")
             
-            # sample별 시각화인 경우 파일명에 sample_token 추가
-            if sample_token and not sample_token[:8] in save_path:
-                name, ext = os.path.splitext(save_path)
-                save_path = f"{name}_sample_{sample_token[:8]}{ext}"
-            
             print(f"🎨 오프스크린 렌더링 시작... ({len(geometries)}개 객체)")
             success = False 
             
@@ -868,14 +863,50 @@ def visualize_all_samples_individually(gaussian_boxes: Optional[EvalBoxes] = Non
         nusc: NuScenes 객체 (LiDAR 데이터 로딩에 필요)
         max_lidar_points: 최대 LiDAR 포인트 개수
     """
-    
-    # 모든 sample_tokens 수집
-    all_sample_tokens = set()
-    for boxes in [gaussian_boxes, pred_boxes, gt_boxes]:
-        if boxes is not None:
-            all_sample_tokens.update(boxes.sample_tokens)
-    
-    sample_tokens = sorted(list(all_sample_tokens))
+    sample_tokens = []
+
+    # 시간 순서대로 sample_tokens 수집
+    if nusc and scene_name:
+        # scene 정보에서 시간 순서대로 sample_tokens 가져오기
+        scene_token = None
+        for scene in nusc.scene:
+            if scene['name'] == scene_name:
+                scene_token = scene['token']
+                break
+        
+        if scene_token:
+            # 해당 scene 찾기
+            scene = nusc.get('scene', scene_token)
+            
+            # scene의 첫 번째 샘플부터 시작하여 시간순으로 수집
+            sample = nusc.get('sample', scene['first_sample_token'])
+            scene_sample_tokens = []
+            
+            while True:
+                scene_sample_tokens.append(sample['token'])
+                if sample['next'] == '':
+                    break
+                sample = nusc.get('sample', sample['next'])
+            
+            # 수집된 scene의 sample_tokens 중에서 실제 박스 데이터가 있는 것만 필터링
+            available_sample_tokens = set()
+            for boxes in [gaussian_boxes, pred_boxes, gt_boxes]:
+                if boxes is not None:
+                    available_sample_tokens.update(boxes.sample_tokens)
+            
+            # 시간순으로 정렬된 sample_tokens 중에서 실제 데이터가 있는 것만 유지
+            sample_tokens = [token for token in scene_sample_tokens if token in available_sample_tokens]
+        else:
+            print(f"⚠️ Scene '{scene_name}'을 찾을 수 없습니다.")
+            return
+    else:
+        # nusc나 scene_name이 없는 경우 기존 방식 사용 (순서 보장 안됨)
+        if gt_boxes:    
+            sample_tokens = list(gt_boxes.sample_tokens)
+        elif pred_boxes:
+            sample_tokens = list(pred_boxes.sample_tokens)
+        elif gaussian_boxes:
+            sample_tokens = list(gaussian_boxes.sample_tokens)
     
     if max_samples > 0:
         sample_tokens = sample_tokens[:max_samples]
@@ -891,7 +922,15 @@ def visualize_all_samples_individually(gaussian_boxes: Optional[EvalBoxes] = Non
         
         save_path = None
         if save_dir:
-            save_path = os.path.join(save_dir, f"sample_{sample_token}.png")
+            # scene 이름으로 하위 폴더 생성
+            if scene_name:
+                scene_dir = os.path.join(save_dir, scene_name)
+                os.makedirs(scene_dir, exist_ok=True)
+                # 2자리 인덱스로 파일명 생성
+                save_path = os.path.join(scene_dir, f"sample_{i:02d}_{sample_token}.png")
+            else:
+                # scene_name이 없는 경우 기본 save_dir 사용
+                save_path = os.path.join(save_dir, f"sample_{i:02d}_{sample_token}.png")
         
         visualize_ego_translations_open3d(
             gaussian_boxes=gaussian_boxes,
