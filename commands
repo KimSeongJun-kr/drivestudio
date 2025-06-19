@@ -50,7 +50,26 @@ python seongjun_tools/evaluate_3dbb.py \
     --dataroot /workspace/drivestudio/data/nuscenes/raw \
     --verbose True
 
-# 4. Visualize
+# 4. 3D Bounding Box Visualization
+python seongjun_tools/visualize_instances.py \
+    --gaussian_boxes /workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json \
+    --pred_boxes /workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar_selected_tar.json \
+    --gt_boxes /workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src_selected_tar.json \
+    --version v1.0-mini \
+    --dataroot /workspace/drivestudio/data/nuscenes/raw \
+
+python seongjun_tools/visualize_instances.py \
+    --gaussian_boxes /workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json \
+    --pred_boxes /workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar_selected_tar.json \
+    --gt_boxes /workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src_selected_tar.json \
+    --version v1.0-mini \
+    --dataroot /workspace/drivestudio/data/nuscenes/raw \
+    --save_plot /workspace/drivestudio/output/feasibility_check/updated/plots
+
+
+
+
+
 # DATASET_DIR=/data/my_desk
 # DATASET_DIR=/data/example_dataset_tmp
 # DATASET_DIR=/data/lab_room

@@ -276,22 +276,26 @@ def main() -> None:
         "--src",
         type=str,
         # default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
+        default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json",
         # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
-        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json",
         help="Path to source prediction json",
     )
     parser.add_argument(
         "--tar",
         type=str,
         # default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
-        default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar.json",        
+        # default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar.json",        
         # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar.json",
+        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json",
         help="Path to destination gaussian poses json",
     )
     parser.add_argument(
         "--output_postfix",
         type=str,
-        default="_matched",
+        default="",
         # default="_matched",
         help="Postfix for output file name",
     )
@@ -366,7 +370,7 @@ def main() -> None:
     print('Matching boxes...')
     all_matched_src_boxes = defaultdict(list)
     all_matched_tar_boxes = defaultdict(list)
-    dist_th = 10.0
+    dist_th = 2.0
 
     match_src_boxes, match_tar_boxes = correspondence(tar_pred_boxes, src_pred_boxes, config.dist_fcn_callable, dist_th)
     for sample_token, matched_src_boxes in match_src_boxes.items():
