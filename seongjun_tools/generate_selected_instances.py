@@ -321,7 +321,10 @@ def main() -> None:
         "--scene_name",
         type=str,
         default=None,
-        help="Scene name to filter boxes (e.g., 'scene-0061')",
+        default='scene-1100',
+        help="Scene name to filter boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
+                                                "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
+                                                "'scene-1094', 'scene-1100')",
     )
 
     args = parser.parse_args()
