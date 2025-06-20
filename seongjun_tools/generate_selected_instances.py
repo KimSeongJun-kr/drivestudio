@@ -153,7 +153,73 @@ def filter_boxes_by_scene(nusc: NuScenes, boxes: EvalBoxes, scene_name: str) -> 
 
     print(f"✅ Scene '{scene_name}'에서 {len(scene_sample_tokens)}개의 샘플을 찾았습니다.")
     return filtered_boxes
+
+def get_scenes_from_boxes(nusc: NuScenes, boxes: EvalBoxes) -> List[str]:
+    """EvalBoxes에서 scene 이름들을 추출합니다.
+
+    Args:
+        nusc: NuScenes 객체
+        boxes: scene 이름을 추출할 EvalBoxes
+
+    Returns:
+        scene 이름들의 리스트
+    """
+    scene_names = set()
+    for sample_token in boxes.sample_tokens:
+        sample = nusc.get('sample', sample_token)
+        scene_token = sample['scene_token']
+        scene = nusc.get('scene', scene_token)
+        scene_names.add(scene['name'])
     
+    return list(scene_names)
+
+def filter_boxes_by_common_scenes(nusc: NuScenes, src_boxes: EvalBoxes, tar_boxes: EvalBoxes) -> Tuple[EvalBoxes, EvalBoxes]:
+    """src와 tar에 모두 포함된 scene들만으로 boxes를 필터링합니다.
+
+    Args:
+        nusc: NuScenes 객체
+        src_boxes: source EvalBoxes
+        tar_boxes: target EvalBoxes
+
+    Returns:
+        필터링된 (src_boxes, tar_boxes) 튜플
+    """
+    # 각각에서 scene들 추출
+    src_scenes = set(get_scenes_from_boxes(nusc, src_boxes))
+    tar_scenes = set(get_scenes_from_boxes(nusc, tar_boxes))
+    
+    # 공통 scene들 찾기
+    common_scenes = src_scenes.intersection(tar_scenes)
+    
+    print(f"📊 Source scenes: {len(src_scenes)}, Target scenes: {len(tar_scenes)}, Common scenes: {len(common_scenes)}")
+    print(f"🔄 Common scenes: {sorted(common_scenes)}")
+    
+    if not common_scenes:
+        print("⚠️ 공통 scene이 없습니다!")
+        return EvalBoxes(), EvalBoxes()
+    
+    # scene token들로 변환
+    common_scene_tokens = set()
+    for scene in nusc.scene:
+        if scene['name'] in common_scenes:
+            common_scene_tokens.add(scene['token'])
+    
+    # 공통 scene들에 해당하는 sample_tokens만 필터링
+    def filter_by_scene_tokens(boxes: EvalBoxes, scene_tokens: set) -> EvalBoxes:
+        filtered_boxes = EvalBoxes()
+        for sample_token in boxes.sample_tokens:
+            sample = nusc.get('sample', sample_token)
+            if sample['scene_token'] in scene_tokens:
+                filtered_boxes.add_boxes(sample_token, boxes[sample_token])
+        return filtered_boxes
+    
+    filtered_src_boxes = filter_by_scene_tokens(src_boxes, common_scene_tokens)
+    filtered_tar_boxes = filter_by_scene_tokens(tar_boxes, common_scene_tokens)
+    
+    print(f"✅ 필터링 완료: src samples: {len(filtered_src_boxes.sample_tokens)}, tar samples: {len(filtered_tar_boxes.sample_tokens)}")
+    
+    return filtered_src_boxes, filtered_tar_boxes
+
 def write_prediction_file(box_list: Dict[str, List[DetectionBox]], output_path: str) -> None:
     """DetectionBox 객체 리스트를 NuScenes prediction 포맷의 JSON 파일로 저장합니다.
     
@@ -209,22 +275,27 @@ def main() -> None:
     parser.add_argument(
         "--src",
         type=str,
-        default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/keyframe_instance_poses_data/all_poses.json",
-        # default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/test/results_nusc_updated_pred.json",
+        # default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
+        default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json",
         help="Path to source prediction json",
     )
     parser.add_argument(
         "--tar",
         type=str,
-        # default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/keyframe_instance_poses_data/all_poses.json",
-        default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/test/results_nusc_updated_pred.json",
-        # default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/test/results_nusc_matched_pred.json",
+        # default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
+        # default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar.json",        
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc.json",
+        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar.json",
+        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json",
         help="Path to destination gaussian poses json",
     )
     parser.add_argument(
         "--output_postfix",
         type=str,
-        default="_updated",
+        default="",
         # default="_matched",
         help="Postfix for output file name",
     )
@@ -243,14 +314,17 @@ def main() -> None:
     parser.add_argument(
         "--verbose",
         type=bool,
-        default=True,
+        default=False,
         help="Verbose",
     )
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-0061',
-        help="Scene name to filter boxes (e.g., 'scene-0061')",
+        default=None,
+        default='scene-1100',
+        help="Scene name to filter boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
+                                                "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
+                                                "'scene-1094', 'scene-1100')",
     )
 
     args = parser.parse_args()
@@ -284,14 +358,22 @@ def main() -> None:
             print(f"Filtering boxes by scene: {args.scene_name}")
         src_pred_boxes = filter_boxes_by_scene(nusc, src_pred_boxes, args.scene_name)
         tar_pred_boxes = filter_boxes_by_scene(nusc, tar_pred_boxes, args.scene_name)
+    else:
+        # Filter to only include scenes that exist in both src and tar
+        if args.verbose:
+            print("Filtering to common scenes in both src and tar...")
+        src_pred_boxes, tar_pred_boxes = filter_boxes_by_common_scenes(nusc, src_pred_boxes, tar_pred_boxes)
 
-    assert set(src_pred_boxes.sample_tokens) == set(tar_pred_boxes.sample_tokens), \
-        "Samples in split doesn't match samples in predictions."
+    # Note: We no longer require exact sample token matches since we're filtering by common scenes
+    # but we can still check if there are any overlapping samples
+    common_samples = set(src_pred_boxes.sample_tokens).intersection(set(tar_pred_boxes.sample_tokens))
+    print(f"📊 Common samples between src and tar: {len(common_samples)}")
+    print(f"🔄 Total src samples: {len(src_pred_boxes.sample_tokens)}, Total tar samples: {len(tar_pred_boxes.sample_tokens)}")
     
     print('Matching boxes...')
     all_matched_src_boxes = defaultdict(list)
     all_matched_tar_boxes = defaultdict(list)
-    dist_th = 10.0
+    dist_th = 2.0
 
     match_src_boxes, match_tar_boxes = correspondence(tar_pred_boxes, src_pred_boxes, config.dist_fcn_callable, dist_th)
     for sample_token, matched_src_boxes in match_src_boxes.items():

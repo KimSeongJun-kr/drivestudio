@@ -10,6 +10,7 @@ import argparse
 from nuscenes.nuscenes import NuScenes
 from scipy.spatial.transform import Rotation as R
 from pyquaternion import Quaternion
+import glob
 
 @dataclass
 class PoseAnnotation:
@@ -471,139 +472,186 @@ def check_checkpoint_structure(checkpoint: Dict[str, Any]) -> Dict[str, bool]:
     
     return structure_check
 
-def extract_all_poses_from_checkpoint(checkpoint_path: str, output_dir: str, nuscenes_dataroot: Optional[str] = None, scene_name: str = "", nuscenes_version: str = "v1.0-mini") -> None:
-    """checkpoint에서 모든 포즈 데이터를 추출하여 JSON으로 저장"""
-    print(f"Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+def process_folder_checkpoints(folder_path: str, checkpoint_filename: str = "checkpoint_final.pth", analyze_structure: bool = False, nuscenes_dataroot: Optional[str] = None, nuscenes_version: str = "v1.0-mini") -> None:
+    """폴더 내 모든 하위 폴더의 checkpoint 파일들을 일괄 처리하여 하나의 JSON 파일로 통합"""
+    # scene 이름 매핑 리스트
+    scene_names = ['scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', 'scene-0757', 
+                   'scene-0796', 'scene-0916', 'scene-1077', 'scene-1094', 'scene-1100']
     
-    # 로드된 데이터 타입 확인
-    print(f"Loaded data type: {type(checkpoint)}")
+    folder_path_obj = Path(folder_path)
     
-    if not isinstance(checkpoint, dict):
-        print(f"❌ Error: Expected dict, but got {type(checkpoint)}")
-        print("Cannot process non-dictionary checkpoint files.")
+    if not folder_path_obj.exists():
+        print(f"❌ 오류: 폴더 '{folder_path}'가 존재하지 않습니다.")
         return
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
     
-    # NuScenes scene 정보와 sample 토큰 가져오기
-    scene_token = ""
-    sample_tokens = None
-    camera_front_start = None
-    
-    if nuscenes_dataroot and scene_name:
-        scene_token, scene_name, sample_tokens = get_nuscenes_scene_info(nuscenes_dataroot, scene_name, version=nuscenes_version)
-        if sample_tokens:
-            print(f"✅ NuScenes scene '{scene_name}' 정보 로드 완료")
-            print(f"✅ NuScenes sample 토큰 로드 완료 ({len(sample_tokens)}개)")
-            
-            # 카메라 포즈 변환을 위한 첫 번째 카메라 포즈 로드
-            camera_front_start = get_camera_front_start_pose(nuscenes_dataroot, scene_name, version=nuscenes_version)
-            if camera_front_start is not None:
-                print(f"✅ 카메라 front start 포즈 로드 완료 (좌표 변환용)")
-            else:
-                print(f"⚠️ 카메라 front start 포즈 로드 실패 - 좌표 변환 없이 진행")
-        else:
-            print(f"❌ 경로: '{nuscenes_dataroot}'에서 NuScenes scene '{scene_name}' 정보 로드 실패")
-            return
-    else:
-        print(f"❌ 경로: '{nuscenes_dataroot}'에서 NuScenes scene '{scene_name}' 정보 로드 실패")
+    if not folder_path_obj.is_dir():
+        print(f"❌ 오류: '{folder_path}'는 폴더가 아닙니다.")
         return
-
-    # 체크포인트 구조 분석
-    print("\n🔍 Analyzing checkpoint structure...")
-    analyze_checkpoint_structure(checkpoint)
-    print()
+    
+    print(f"🔍 폴더 '{folder_path}' 내에서 {checkpoint_filename} 파일들을 검색중...")
+    
+    # 하위 폴더들에서 checkpoint 파일 찾기
+    checkpoint_pattern = str(folder_path_obj / "*" / checkpoint_filename)
+    checkpoint_files = glob.glob(checkpoint_pattern)
+    
+    if not checkpoint_files:
+        print(f"❌ '{folder_path}' 내에서 {checkpoint_filename} 파일을 찾을 수 없습니다.")
+        return
+    
+    print(f"✅ 총 {len(checkpoint_files)}개의 {checkpoint_filename} 파일을 찾았습니다:")
+    for checkpoint_file in checkpoint_files:
+        print(f"  - {checkpoint_file}")
+    
+    # 모든 checkpoint에서 추출한 annotation들을 저장할 리스트
+    all_combined_annotations = []
+    
+    # 각 checkpoint 파일 처리
+    for i, checkpoint_file in enumerate(checkpoint_files):
+        checkpoint_path = Path(checkpoint_file)
+        parent_folder = checkpoint_path.parent
+        folder_name = parent_folder.name
         
-    # 구조 검증
-    print("🔍 Checking required structure...")
-    structure_check = check_checkpoint_structure(checkpoint)
-    
-    for key, value in structure_check.items():
-        status = "✅" if value else "❌"
-        print(f"{status} {key}: {value}")
-    
-    if not structure_check['has_models']:
-        print("❌ Error: No 'models' key found in checkpoint. Cannot extract poses.")
-        return
-    
-    print()
-       
-    # 각 노드 타입별로 포즈 추출
-    all_annotations = []
-    
-    if structure_check['has_rigid_nodes']:
-        print("Extracting RigidNodes poses...")
+        print(f"\n{'='*80}")
+        print(f"처리 중 ({i+1}/{len(checkpoint_files)}): {folder_name}")
+        print(f"{'='*80}")
+        
+        # 폴더명에서 scene 인덱스 추출
+        import re
+        scene_match = re.search(r'scene_(\d+)', folder_name)
+        if scene_match:
+            scene_index = int(scene_match.group(1))
+            if scene_index < len(scene_names):
+                scene_name = scene_names[scene_index]
+                print(f"📍 폴더 '{folder_name}'에서 scene 인덱스 {scene_index} 추출 → '{scene_name}'")
+            else:
+                print(f"⚠️ scene 인덱스 {scene_index}가 scene_names 리스트 범위를 초과합니다. 기본값 사용.")
+                scene_name = scene_names[0]  # 첫 번째 scene을 기본값으로 사용
+        else:
+            print(f"⚠️ 폴더명 '{folder_name}'에서 scene 정보를 추출할 수 없습니다. 기본값 사용.")
+            scene_name = scene_names[0]  # 첫 번째 scene을 기본값으로 사용
+        
+        # NuScenes scene 정보와 sample 토큰 가져오기
+        scene_token = ""
+        sample_tokens = None
+        camera_front_start = None
+        
+        if nuscenes_dataroot and scene_name:
+            scene_token, scene_name, sample_tokens = get_nuscenes_scene_info(nuscenes_dataroot, scene_name, version=nuscenes_version)
+            if sample_tokens:
+                print(f"✅ NuScenes scene '{scene_name}' 정보 로드 완료 ({len(sample_tokens)}개 sample)")
+                
+                # 카메라 포즈 변환을 위한 첫 번째 카메라 포즈 로드
+                camera_front_start = get_camera_front_start_pose(nuscenes_dataroot, scene_name, version=nuscenes_version)
+                if camera_front_start is not None:
+                    print(f"✅ 카메라 front start 포즈 로드 완료")
+                else:
+                    print(f"⚠️ 카메라 front start 포즈 로드 실패 - 좌표 변환 없이 진행")
+            else:
+                print(f"❌ NuScenes scene '{scene_name}' 정보 로드 실패 - 이 checkpoint 건너뛰기")
+                continue
+        else:
+            print(f"❌ NuScenes 정보가 제공되지 않았습니다 - 이 checkpoint 건너뛰기")
+            continue
+        
         try:
-            rigid_annotations = extract_rigid_nodes_poses(checkpoint, scene_token, scene_name, sample_tokens, camera_front_start)
-            rigid_output = output_path / "rigid_nodes_poses.json"
-            save_pose_annotations_to_json(rigid_annotations, str(rigid_output))
-            print(f"✅ Saved {len(rigid_annotations)} RigidNodes annotations to {rigid_output}")
-            all_annotations.extend(rigid_annotations)
+            # checkpoint 로드
+            print(f"Loading checkpoint from {checkpoint_path}...")
+            checkpoint = torch.load(str(checkpoint_path), map_location='cpu')
+            
+            # 로드된 데이터 타입 확인
+            if not isinstance(checkpoint, dict):
+                print(f"❌ Error: Expected dict, but got {type(checkpoint)}")
+                continue
+            
+            # 체크포인트 구조 분석 (옵션)
+            if analyze_structure:
+                print("\n🔍 Analyzing checkpoint structure...")
+                analyze_checkpoint_structure(checkpoint)
+                print()
+            
+            # 구조 검증
+            structure_check = check_checkpoint_structure(checkpoint)
+            
+            if not structure_check['has_models']:
+                print("❌ Error: No 'models' key found in checkpoint. Skipping.")
+                continue
+            
+            # 각 노드 타입별로 포즈 추출
+            checkpoint_annotations = []
+            
+            if structure_check['has_rigid_nodes']:
+                print("Extracting RigidNodes poses...")
+                rigid_annotations = extract_rigid_nodes_poses(checkpoint, scene_token, scene_name, sample_tokens, camera_front_start)
+                checkpoint_annotations.extend(rigid_annotations)
+                print(f"✅ Extracted {len(rigid_annotations)} RigidNodes annotations")
+            
+            if structure_check['has_smpl_nodes']:
+                print("Extracting SMPLNodes poses...")
+                smpl_annotations = extract_smpl_nodes_poses(checkpoint, scene_token, scene_name, sample_tokens, camera_front_start)
+                checkpoint_annotations.extend(smpl_annotations)
+                print(f"✅ Extracted {len(smpl_annotations)} SMPLNodes annotations")
+            
+            if structure_check['has_deformable_nodes']:
+                print("Extracting DeformableNodes poses...")
+                deform_annotations = extract_deformable_nodes_poses(checkpoint, scene_token, scene_name, sample_tokens, camera_front_start)
+                checkpoint_annotations.extend(deform_annotations)
+                print(f"✅ Extracted {len(deform_annotations)} DeformableNodes annotations")
+            
+            # 현재 checkpoint의 annotation들을 전체 리스트에 추가
+            all_combined_annotations.extend(checkpoint_annotations)
+            print(f"✅ 완료: {folder_name} ({len(checkpoint_annotations)} annotations)")
+            
         except Exception as e:
-            print(f"❌ Error extracting RigidNodes: {e}")
-    else:
-        print("⏭️ Skipping RigidNodes (not found in checkpoint)")
+            print(f"❌ 오류 발생 ({folder_name}): {e}")
+            continue
     
-    if structure_check['has_smpl_nodes']:
-        print("Extracting SMPLNodes poses...")
-        try:
-            smpl_annotations = extract_smpl_nodes_poses(checkpoint, scene_token, scene_name, sample_tokens, camera_front_start)
-            smpl_output = output_path / "smpl_nodes_poses.json"
-            save_pose_annotations_to_json(smpl_annotations, str(smpl_output))
-            print(f"✅ Saved {len(smpl_annotations)} SMPLNodes annotations to {smpl_output}")
-            all_annotations.extend(smpl_annotations)
-        except Exception as e:
-            print(f"❌ Error extracting SMPLNodes: {e}")
+    # 모든 결과를 하나의 JSON 파일로 저장
+    if all_combined_annotations:
+        output_file = folder_path_obj / "poses.json"
+        save_pose_annotations_to_json(all_combined_annotations, str(output_file))
+        print(f"\n🎉 모든 checkpoint 파일 처리 완료!")
+        print(f"✅ 총 {len(all_combined_annotations)}개의 annotation을 '{output_file}'에 저장했습니다.")
+        print(f"처리된 checkpoint 파일: {len(checkpoint_files)}개")
     else:
-        print("⏭️ Skipping SMPLNodes (not found in checkpoint)")
-    
-    if structure_check['has_deformable_nodes']:
-        print("Extracting DeformableNodes poses...")
-        try:
-            deform_annotations = extract_deformable_nodes_poses(checkpoint, scene_token, scene_name, sample_tokens, camera_front_start)
-            deform_output = output_path / "deformable_nodes_poses.json"
-            save_pose_annotations_to_json(deform_annotations, str(deform_output))
-            print(f"✅ Saved {len(deform_annotations)} DeformableNodes annotations to {deform_output}")
-            all_annotations.extend(deform_annotations)
-        except Exception as e:
-            print(f"❌ Error extracting DeformableNodes: {e}")
-    else:
-        print("⏭️ Skipping DeformableNodes (not found in checkpoint)")
-    
-    # 추출된 포즈가 있으면 통합 파일 생성
-    if all_annotations:
-        print("Combining all poses...")
-        all_output = output_path / "all_poses.json"
-        save_pose_annotations_to_json(all_annotations, str(all_output))
-        print(f"✅ Saved {len(all_annotations)} total annotations to {all_output}")
-    else:
-        print("⚠️ No pose data extracted from checkpoint")
-    
-    print("Pose extraction completed!")
+        print(f"\n⚠️ 추출된 포즈 데이터가 없습니다.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract pose data from DriveStudio checkpoint")
-    parser.add_argument("--checkpoint", type=str, default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/checkpoint_final.pth", 
-                       help="Path to checkpoint file")
-    parser.add_argument("--output", type=str, default=None, 
-                       help="Output directory for JSON files (default: checkpoint 경로의 keyframe_instance_poses_data 폴더)")
-    parser.add_argument("--nuscenes-dataroot", type=str, default="/workspace/drivestudio/data/nuscenes/raw",
-                       help="NuScenes 데이터 루트 디렉토리 (키프레임 매핑용)")
-    parser.add_argument("--scene-name", type=str, default="scene-0061",
-                       help="NuScenes scene 이름 (예: 'scene-0061')")
-    parser.add_argument("--nuscenes-version", type=str, default="v1.0-mini",
-                       help="NuScenes 버전 (예: 'v1.0-mini', 'v1.0-trainval')")
+    parser = argparse.ArgumentParser(description="Extract pose data from DriveStudio checkpoints")
+    
+    # 폴더 일괄 처리 옵션
+    parser.add_argument("--folder", type=str,
+                        default="/workspace/drivestudio/output/feasibility_check/updated",
+                        help="Path to folder containing subfolders with checkpoint files")
+    parser.add_argument("--checkpoint-filename", type=str, 
+                       default="checkpoint_final.pth",
+                       help="Name of checkpoint file to search for (default: checkpoint_final.pth)")
+    parser.add_argument("--analyze-structure", type=bool, 
+                       default=False,
+                       help="Analyze and print checkpoint structure for each file")
+    
+    # 공통 옵션들
+    parser.add_argument("--nuscenes-dataroot", type=str, 
+                        default="/workspace/drivestudio/data/nuscenes/raw",
+                        help="NuScenes 데이터 루트 디렉토리 (키프레임 매핑용)")
+    parser.add_argument("--nuscenes-version", type=str, 
+                        default="v1.0-mini",
+                        help="NuScenes 버전 (예: 'v1.0-mini', 'v1.0-trainval')")
     
     args = parser.parse_args()
     
-    # output이 지정되지 않은 경우 checkpoint 경로 기반으로 설정
-    if args.output is None:
-        checkpoint_path = Path(args.checkpoint)
-        args.output = str(checkpoint_path.parent / "keyframe_instance_poses_data")
-    
-    extract_all_poses_from_checkpoint(args.checkpoint, args.output, args.nuscenes_dataroot, args.scene_name, args.nuscenes_version)
+    # 폴더 일괄 처리
+    print(f"🚀 폴더 일괄 처리 모드")
+    print(f"📁 대상 폴더: {args.folder}")
+    print(f"📄 검색할 파일명: {args.checkpoint_filename}")
+    if args.analyze_structure:
+        print(f"🔍 체크포인트 구조 분석: 활성화")
+    process_folder_checkpoints(
+        folder_path=args.folder,
+        checkpoint_filename=args.checkpoint_filename,
+        analyze_structure=args.analyze_structure,
+        nuscenes_dataroot=args.nuscenes_dataroot,
+        nuscenes_version=args.nuscenes_version
+    )
 
 if __name__ == "__main__":
     main()

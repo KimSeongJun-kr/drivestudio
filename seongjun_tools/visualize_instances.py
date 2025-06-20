@@ -1,7 +1,7 @@
 import argparse
 import numpy as np
 import tqdm
-from typing import Callable, Tuple, List, Dict
+from typing import Callable, Tuple, List, Dict, Optional
 from collections import defaultdict, OrderedDict
 from dataclasses import dataclass, asdict
 import json
@@ -12,6 +12,8 @@ from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from pyquaternion import Quaternion
 import open3d as o3d
+import open3d.visualization
+import ctypes
 
 from nuscenes import NuScenes
 from nuscenes.eval.detection.evaluate import NuScenesEval
@@ -25,21 +27,71 @@ from nuscenes.eval.common.data_classes import EvalBoxes
 from nuscenes.eval.common.loaders import load_prediction, add_center_dist, filter_eval_boxes
 from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
 from nuscenes.utils.splits import create_splits_scenes
+from nuscenes.utils.data_classes import LidarPointCloud
+import abc
+from typing import Union
 
-@dataclass
-class Annotation:
-    token: str
-    sample_token: str
-    instance_token: str
-    visibility_token: str
-    attribute_tokens: List[str]
-    translation: List[float]     # [x, y, z]
-    size: List[float]            # [w, l, h]
-    rotation: List[float]        # quaternion [w, x, y, z]
-    prev: str
-    next: str
-    num_lidar_pts: int
-    num_radar_pts: int
+class EvalBox(abc.ABC):
+    """ Abstract base class for data classes used during detection evaluation. Can be a prediction or ground truth."""
+
+    def __init__(self,
+                 sample_token: str = "",
+                 translation: Tuple[float, float, float] = (0, 0, 0),
+                 size: Tuple[float, float, float] = (0, 0, 0),
+                 rotation: Tuple[float, float, float, float] = (0, 0, 0, 0),
+                 velocity: Tuple[float, float] = (0, 0),
+                 ego_translation: Tuple[float, float, float] = (0, 0, 0),  # Translation to ego vehicle in meters.
+                 ego_rotation: Tuple[float, float, float, float] = (0, 0, 0, 0),
+                 num_pts: int = -1):  # Nbr. LIDAR or RADAR inside the box. Only for gt boxes.
+
+        # Assert data for shape and NaNs.
+        assert type(sample_token) == str, 'Error: sample_token must be a string!'
+
+        assert len(translation) == 3, 'Error: Translation must have 3 elements!'
+        assert not np.any(np.isnan(translation)), 'Error: Translation may not be NaN!'
+
+        assert len(size) == 3, 'Error: Size must have 3 elements!'
+        assert not np.any(np.isnan(size)), 'Error: Size may not be NaN!'
+
+        assert len(rotation) == 4, 'Error: Rotation must have 4 elements!'
+        assert not np.any(np.isnan(rotation)), 'Error: Rotation may not be NaN!'
+
+        # Velocity can be NaN from our database for certain annotations.
+        assert len(velocity) == 2, 'Error: Velocity must have 2 elements!'
+
+        assert len(ego_translation) == 3, 'Error: Translation must have 3 elements!'
+        assert not np.any(np.isnan(ego_translation)), 'Error: Translation may not be NaN!'
+
+        assert type(num_pts) == int, 'Error: num_pts must be int!'
+        assert not np.any(np.isnan(num_pts)), 'Error: num_pts may not be NaN!'
+
+        # Assign.
+        self.sample_token = sample_token
+        self.translation = translation
+        self.size = size
+        self.rotation = rotation
+        self.velocity = velocity
+        self.ego_translation = ego_translation
+        self.ego_rotation = ego_rotation
+        self.num_pts = num_pts
+
+    @property
+    def ego_dist(self) -> float:
+        """ Compute the distance from this box to the ego vehicle in 2D. """
+        return np.sqrt(np.sum(np.array(self.ego_translation[:2]) ** 2))
+
+    def __repr__(self):
+        return str(self.serialize())
+
+    @abc.abstractmethod
+    def serialize(self) -> dict:
+        pass
+
+    @classmethod
+    @abc.abstractmethod
+    def deserialize(cls, content: dict):
+        pass
+
 
 def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> Tuple[EvalBoxes, Dict[str, List]]:
     """
@@ -170,197 +222,47 @@ def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> 
 
     return all_annotations, all_ann_tokens
 
-def accumulate(gt_boxes: EvalBoxes,
-                pred_boxes: EvalBoxes,
-                sample_ann_tokens: Dict[str, List],
-                class_name: str,
-                dist_fcn: Callable,
-                dist_th: float,
-                verbose: bool = False) -> Tuple[DetectionMetricData, Dict[str, List[Tuple[str, DetectionBox]]]]:
+def add_ego_pose(nusc: NuScenes,
+                    eval_boxes: EvalBoxes):
     """
-    Average Precision over predefined different recall thresholds for a single distance threshold.
-    The recall/conf thresholds and other raw metrics will be used in secondary metrics.
-    :param gt_boxes: Maps every sample_token to a list of its sample_annotations.
-    :param pred_boxes: Maps every sample_token to a list of its sample_results.
-    :param class_name: Class to compute AP on.
-    :param dist_fcn: Distance function used to match detections and ground truths.
-    :param dist_th: Distance threshold for a match.
-    :param verbose: If true, print debug messages.
-    :return: (average_prec, metrics). The average precision value and raw data for a number of metrics.
+    Adds the ego pose information (translation and rotation) to each box.
+    :param nusc: The NuScenes instance.
+    :param eval_boxes: A set of boxes, either GT or predictions.
+    :return: eval_boxes augmented with ego pose information.
     """
-    # ---------------------------------------------
-    # Organize input and initialize accumulators.
-    # ---------------------------------------------
+    for sample_token in eval_boxes.sample_tokens:
+        sample_rec = nusc.get('sample', sample_token)
+        sd_record = nusc.get('sample_data', sample_rec['data']['LIDAR_TOP'])
+        pose_record = nusc.get('ego_pose', sd_record['ego_pose_token'])
 
-    # Count the positives.
-    npos = len([1 for gt_box in gt_boxes.all if gt_box.detection_name == class_name])
-    if verbose:
-        print("Found {} GT of class {} out of {} total across {} samples.".
-              format(npos, class_name, len(gt_boxes.all), len(gt_boxes.sample_tokens)))
+        # Get ego pose transformation
+        ego_translation_global = np.array(pose_record['translation'])
+        ego_rotation_global = Quaternion(pose_record['rotation'])
 
-    # For missing classes in the GT, return a data structure corresponding to no predictions.
-    if npos == 0:
-        return DetectionMetricData.no_predictions()
+        for box in eval_boxes[sample_token]:
+            # Convert global coordinates to ego vehicle local coordinates
+            
+            # Step 1: Get relative position vector in global coordinates
+            box_translation_global = np.array(box.translation)
+            relative_translation_global = box_translation_global - ego_translation_global
+            
+            # Step 2: Rotate this position vector to ego vehicle's local coordinate system
+            # This transforms "relative position in global frame" to "relative position in ego frame"
+            # Example: if ego is rotated 90°, what's "north" in global becomes "left" in ego frame
+            ego_translation_array = ego_rotation_global.inverse.rotate(relative_translation_global)
+            
+            # Step 3: Transform box rotation to ego coordinates
+            box_rotation_global = Quaternion(list(box.rotation))  # type: ignore
+            ego_rotation = ego_rotation_global.inverse * box_rotation_global
+            
+            if isinstance(box, DetectionBox) or isinstance(box, TrackingBox):
+                box.ego_translation = tuple(ego_translation_array)
+                # Add ego_rotation attribute dynamically
+                setattr(box, 'ego_rotation', tuple([ego_rotation.w, ego_rotation.x, ego_rotation.y, ego_rotation.z]))  # type: ignore
+            else:
+                raise NotImplementedError
 
-    # Organize the predictions in a single list.
-    pred_boxes_list = [box for box in pred_boxes.all if box.detection_name == class_name]
-    pred_confs = [box.detection_score for box in pred_boxes_list]
-
-    if verbose:
-        print("Found {} PRED of class {} out of {} total across {} samples.".
-              format(len(pred_confs), class_name, len(pred_boxes.all), len(pred_boxes.sample_tokens)))
-
-    # Sort by confidence.
-    sortind = [i for (v, i) in sorted((v, i) for (i, v) in enumerate(pred_confs))][::-1]
-
-    # Do the actual matching.
-    tp = []  # Accumulator of true positives.
-    fp = []  # Accumulator of false positives.
-    conf = []  # Accumulator of confidences.
-
-    # match_data holds the extra metrics we calculate for each match.
-    match_data = {'trans_err': [],
-                  'vel_err': [],
-                  'scale_err': [],
-                  'orient_err': [],
-                  'attr_err': [],
-                  'conf': []}
-
-    # ---------------------------------------------
-    # Match and accumulate match data.
-    # ---------------------------------------------
-
-    taken = set()  # Initially no gt bounding box is matched.
-    match_pred_boxes = defaultdict(list)
-
-    for ind in sortind:
-        pred_box = pred_boxes_list[ind]
-        min_dist = np.inf
-        match_gt_idx = None
-        ann_tokens = sample_ann_tokens[pred_box.sample_token]
-
-        for gt_idx, gt_box in enumerate(gt_boxes[pred_box.sample_token]):
-
-            # Find closest match among ground truth boxes
-            if gt_box.detection_name == class_name and not (pred_box.sample_token, gt_idx) in taken:
-                this_distance = dist_fcn(gt_box, pred_box)
-                if this_distance < min_dist:
-                    min_dist = this_distance
-                    match_gt_idx = gt_idx
-                    match_ann_token = ann_tokens[gt_idx]
-
-        # If the closest match is close enough according to threshold we have a match!
-        is_match = min_dist < dist_th
-
-        if is_match:
-            taken.add((pred_box.sample_token, match_gt_idx))
-            match_pred_boxes[pred_box.sample_token].append((match_ann_token, pred_box))
-
-            #  Update tp, fp and confs.
-            tp.append(1)
-            fp.append(0)
-            conf.append(pred_box.detection_score)
-
-            # Since it is a match, update match data also.
-            gt_box_match = gt_boxes[pred_box.sample_token][match_gt_idx]
-
-            match_data['trans_err'].append(center_distance(gt_box_match, pred_box))
-            match_data['vel_err'].append(velocity_l2(gt_box_match, pred_box))
-            match_data['scale_err'].append(1 - scale_iou(gt_box_match, pred_box))
-
-            # Barrier orientation is only determined up to 180 degree. (For cones orientation is discarded later)
-            period = np.pi if class_name == 'barrier' else 2 * np.pi
-            match_data['orient_err'].append(yaw_diff(gt_box_match, pred_box, period=period))
-
-            match_data['attr_err'].append(1 - attr_acc(gt_box_match, pred_box))
-            match_data['conf'].append(pred_box.detection_score)
-
-        else:
-            # No match. Mark this as a false positive.
-            tp.append(0)
-            fp.append(1)
-            conf.append(pred_box.detection_score)
-
-    # Check if we have any matches. If not, just return a "no predictions" array.
-    if len(match_data['trans_err']) == 0:
-        return DetectionMetricData.no_predictions()
-
-    # ---------------------------------------------
-    # Calculate and interpolate precision and recall
-    # ---------------------------------------------
-
-    # Accumulate.
-    tp = np.cumsum(tp).astype(float)
-    fp = np.cumsum(fp).astype(float)
-    conf = np.array(conf)
-
-    # Calculate precision and recall.
-    prec = tp / (fp + tp)
-    rec = tp / float(npos)
-
-    rec_interp = np.linspace(0, 1, DetectionMetricData.nelem)  # 101 steps, from 0% to 100% recall.
-    prec = np.interp(rec_interp, rec, prec, right=0)
-    conf = np.interp(rec_interp, rec, conf, right=0)
-    rec = rec_interp
-
-    # ---------------------------------------------
-    # Re-sample the match-data to match, prec, recall and conf.
-    # ---------------------------------------------
-
-    for key in match_data.keys():
-        if key == "conf":
-            continue  # Confidence is used as reference to align with fp and tp. So skip in this step.
-
-        else:
-            # For each match_data, we first calculate the accumulated mean.
-            tmp = cummean(np.array(match_data[key]))
-
-            # Then interpolate based on the confidences. (Note reversing since np.interp needs increasing arrays)
-            match_data[key] = np.interp(conf[::-1], match_data['conf'][::-1], tmp[::-1])[::-1]
-
-    # ---------------------------------------------
-    # Done. Instantiate MetricData and return
-    # ---------------------------------------------
-    return DetectionMetricData(recall=rec,
-                               precision=prec,
-                               confidence=conf,
-                               trans_err=match_data['trans_err'],
-                               vel_err=match_data['vel_err'],
-                               scale_err=match_data['scale_err'],
-                               orient_err=match_data['orient_err'],
-                               attr_err=match_data['attr_err']), match_pred_boxes
-    
-def read_nus_ann_file(dataroot: str, version: str) -> List[Annotation]:
-    """NuScenes annotation 파일을 읽어서 Annotation 객체 리스트로 반환합니다.
-    
-    Args:
-        dataroot: NuScenes 데이터셋 루트 경로
-        version: NuScenes 버전 (e.g. 'v1.0-mini')
-        
-    Returns:
-        List[Annotation]: Annotation 객체 리스트
-    """
-    ann_path = os.path.join(dataroot, version, 'sample_annotation.json')
-    with open(ann_path, 'r') as f:
-        annotations = json.load(f)
-    
-    result = []
-    for ann in annotations:
-        result.append(Annotation(
-            token=str(ann['token']),
-            sample_token=str(ann['sample_token']),
-            instance_token=str(ann['instance_token']),
-            visibility_token=str(ann['visibility_token']),
-            attribute_tokens=[str(token) for token in ann['attribute_tokens']],
-            translation=[float(x) for x in ann['translation']],
-            size=[float(x) for x in ann['size']],
-            rotation=[float(x) for x in ann['rotation']],
-            prev=str(ann['prev']),
-            next=str(ann['next']),
-            num_lidar_pts=int(ann['num_lidar_pts']),
-            num_radar_pts=int(ann['num_radar_pts'])
-        ))
-    return result
+    return eval_boxes
 
 def get_box_corners(translation, size, rotation):
     """3D 박스의 8개 꼭짓점을 계산합니다.
@@ -457,33 +359,199 @@ def create_open3d_sphere(center: np.ndarray, radius: float, color: Tuple[float, 
     sphere.paint_uniform_color(color)
     return sphere
 
-def create_open3d_box(corners: np.ndarray, color: Tuple[float, float, float]) -> o3d.geometry.LineSet:
-    """8개 꼭짓점 정보로부터 Open3D LineSet(육면체) 객체를 생성합니다.
+def create_open3d_box(corners: np.ndarray, color: Tuple[float, float, float]) -> o3d.geometry.TriangleMesh:
+    """8개 꼭짓점 정보로부터 Open3D 두꺼운 선으로 이루어진 육면체 객체를 생성합니다.
 
     Args:
         corners (np.ndarray): (8, 3) 형태의 꼭짓점 좌표
         color (Tuple[float, float, float]): RGB 컬러 (0~1)
 
     Returns:
-        o3d.geometry.LineSet: 시각화용 LineSet
+        o3d.geometry.TriangleMesh: 시각화용 두꺼운 선 박스
     """
-    line_set = o3d.geometry.LineSet()
-    line_set.points = o3d.utility.Vector3dVector(corners)
-    line_set.lines = o3d.utility.Vector2iVector(OPEN3D_BOX_LINES)
-    line_set.colors = o3d.utility.Vector3dVector([color for _ in OPEN3D_BOX_LINES])
-    return line_set
+    # 선 두께 설정
+    line_radius = 0.05  # 선의 반지름 (두께 조절)
+    
+    # 모든 실린더를 합칠 메쉬
+    combined_mesh = o3d.geometry.TriangleMesh()
+    
+    # 12개의 모서리에 대해 실린더 생성
+    for line_indices in OPEN3D_BOX_LINES:
+        start_point = corners[line_indices[0]]
+        end_point = corners[line_indices[1]]
+        
+        # 두 점 사이의 거리 계산
+        line_vector = end_point - start_point
+        line_length = np.linalg.norm(line_vector)
+        
+        if line_length < 1e-6:  # 너무 짧은 선은 건너뛰기
+            continue
+            
+        # 실린더 생성 (Z축 방향으로 생성됨)
+        cylinder = o3d.geometry.TriangleMesh.create_cylinder(
+            radius=line_radius, 
+            height=line_length,
+            resolution=8  # 실린더의 해상도 (낮으면 성능 향상)
+        )
+        
+        # 실린더를 올바른 방향으로 회전시키기
+        # Z축 단위벡터
+        z_axis = np.array([0, 0, 1])
+        # 선의 방향 벡터
+        line_direction = line_vector / line_length
+        
+        # 회전축 계산 (외적)
+        rotation_axis = np.cross(z_axis, line_direction)
+        rotation_axis_norm = np.linalg.norm(rotation_axis)
+        
+        if rotation_axis_norm > 1e-6:  # 평행하지 않은 경우
+            # 회전각 계산
+            cos_angle = np.dot(z_axis, line_direction)
+            angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+            
+            # 회전축 정규화
+            rotation_axis = rotation_axis / rotation_axis_norm
+            
+            # 회전 행렬 생성
+            rotation_matrix = o3d.geometry.get_rotation_matrix_from_axis_angle(
+                rotation_axis * angle
+            )
+            
+            # 실린더 회전
+            cylinder.rotate(rotation_matrix, center=(0, 0, 0))
+        
+        # 실린더를 시작점으로 이동 (실린더 중심이 선의 중점이 되도록)
+        cylinder_center = (start_point + end_point) / 2
+        cylinder.translate(cylinder_center)
+        
+        # 색상 적용
+        cylinder.paint_uniform_color(color)
+        
+        # 메쉬 합치기
+        combined_mesh += cylinder
+    
+    return combined_mesh
+
+
+def load_lidar_pointcloud(nusc: NuScenes, sample_token: str) -> Optional[np.ndarray]:
+    """NuScenes sample에서 LiDAR 포인트 클라우드를 로드하고 ego vehicle 좌표계로 변환합니다.
+    
+    Args:
+        nusc: NuScenes 객체
+        sample_token: sample token
+        
+    Returns:
+        ego vehicle 좌표계의 포인트 클라우드 numpy array (N, 3) 또는 None
+    """
+    try:
+        # sample 정보 가져오기
+        sample = nusc.get('sample', sample_token)
+        
+        # LiDAR 데이터 토큰 가져오기
+        lidar_token = sample['data']['LIDAR_TOP']
+        
+        # sample_data 정보 가져오기
+        sample_data = nusc.get('sample_data', lidar_token)
+        
+        # LiDAR 파일 경로
+        lidar_path = os.path.join(nusc.dataroot, sample_data['filename'])
+        
+        if not os.path.exists(lidar_path):
+            print(f"⚠️ LiDAR 파일을 찾을 수 없습니다: {lidar_path}")
+            return None
+            
+        # LiDAR 포인트 클라우드 로드 (센서 좌표계)
+        pc = LidarPointCloud.from_file(lidar_path)
+        
+        # LiDAR extrinsic calibration 정보 가져오기
+        calibrated_sensor = nusc.get('calibrated_sensor', sample_data['calibrated_sensor_token'])
+        
+        # LiDAR extrinsic: 센서 -> ego vehicle 변환
+        lidar_translation = np.array(calibrated_sensor['translation'])
+        lidar_rotation = Quaternion(calibrated_sensor['rotation'])
+        
+        # 포인트를 ego vehicle 좌표계로 변환
+        # Step 1: LiDAR 센서 좌표계의 포인트들 (x, y, z)
+        points_sensor = pc.points[:3, :]  # (3, N)
+        
+        # Step 2: LiDAR rotation 적용
+        points_rotated = lidar_rotation.rotation_matrix @ points_sensor  # (3, N)
+        
+        # Step 3: LiDAR translation 적용
+        points_ego = points_rotated + lidar_translation.reshape(3, 1)  # (3, N)
+        
+        # (N, 3) 형태로 변환하여 반환
+        return points_ego.T
+        
+    except Exception as e:
+        print(f"⚠️ LiDAR 데이터 로드 실패: {e}")
+        return None
+
+
+def create_open3d_pointcloud(points: np.ndarray, color: Optional[Tuple[float, float, float]] = None,
+                            max_points: int = 50000) -> o3d.geometry.PointCloud:
+    """numpy array로부터 Open3D PointCloud 객체를 생성합니다.
+    
+    Args:
+        points: (N, 3) 형태의 포인트 좌표
+        color: RGB 색상 (0~1), None이면 거리에 따른 색상 사용
+        max_points: 최대 포인트 개수 (성능을 위해 제한)
+        
+    Returns:
+        Open3D PointCloud 객체
+    """
+    # 포인트 개수 제한
+    if len(points) > max_points:
+        # 랜덤 샘플링
+        indices = np.random.choice(len(points), max_points, replace=False)
+        points = points[indices]
+    
+    # Open3D PointCloud 생성
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    
+    if color is not None:
+        # 단일 색상 적용
+        pcd.paint_uniform_color(color)
+    else:
+        # 거리에 따른 색상 (회색조)
+        distances = np.linalg.norm(points, axis=1)
+        max_dist = np.percentile(distances, 95)  # 95 percentile로 스케일링
+        normalized_distances = np.clip(distances / max_dist, 0, 1)
+        
+        # 거리가 가까우면 밝은 회색, 멀면 어두운 회색
+        colors = np.column_stack([1 - normalized_distances * 0.7] * 3)
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+    
+    return pcd
 
 
 # noinspection PyBroadException
-def visualize_ego_translations_open3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes, scene_name: str = None,
-                                      score_threshold: float = None, save_path: str = None, max_boxes: int = -1) -> None:
-    """Open3D를 이용하여 pred_boxes와 gt_boxes를 3D로 시각화합니다.
+def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None, 
+                                     pred_boxes: Optional[EvalBoxes] = None, 
+                                     gt_boxes: Optional[EvalBoxes] = None, 
+                                     scene_name: Optional[str] = None,
+                                     score_threshold: Optional[float] = None, 
+                                     save_path: Optional[str] = None, 
+                                     max_boxes: int = -1,
+                                     sample_token: Optional[str] = None,
+                                     show_lidar: bool = False,
+                                     nusc: Optional[NuScenes] = None,
+                                     max_lidar_points: int = 50000) -> None:
+    """Open3D를 이용하여 gaussian_boxes, pred_boxes, gt_boxes를 3D로 시각화합니다.
 
     Args:
-        pred_boxes: 예측 박스들
-        gt_boxes: Ground truth 박스들
+        gaussian_boxes: Gaussian 박스들 (빨간색)
+        pred_boxes: 예측 박스들 (파란색)
+        gt_boxes: Ground truth 박스들 (초록색)
         scene_name: (선택) scene 이름 (제목 표시용)
         score_threshold: (선택) score threshold (제목 표시용)
+        save_path: (선택) 저장할 파일 경로
+        max_boxes: 최대 박스 개수
+        sample_token: (선택) 특정 sample만 시각화
+        show_lidar: LiDAR 포인트 클라우드 표시 여부
+        nusc: NuScenes 객체 (LiDAR 데이터 로딩에 필요)
+        max_lidar_points: 최대 LiDAR 포인트 개수
     """
 
     geometries = []
@@ -491,16 +559,43 @@ def visualize_ego_translations_open3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes
     # Coordinate frame 추가
     geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0))
 
-    pred_count, gt_count = 0, 0
+    gaussian_count, pred_count, gt_count = 0, 0, 0
     center_translation = None
 
+    # sample_token이 지정된 경우 해당 sample의 박스들만 사용
+    sample_tokens_to_process = []
+    
+    # 처리할 sample_tokens 결정
+    if sample_token:
+        # 특정 sample만 처리
+        for boxes in [gaussian_boxes, pred_boxes, gt_boxes]:
+            if boxes is not None and sample_token in boxes.sample_tokens:
+                sample_tokens_to_process = [sample_token]
+                break
+        if not sample_tokens_to_process:
+            print(f"⚠️ Sample token '{sample_token}'을 찾을 수 없습니다.")
+            return
+    else:
+        # 모든 sample 처리 (기존 동작)
+        all_sample_tokens = set()
+        for boxes in [gaussian_boxes, pred_boxes, gt_boxes]:
+            if boxes is not None:
+                all_sample_tokens.update(boxes.sample_tokens)
+        sample_tokens_to_process = list(all_sample_tokens)
+
     # 첫 번째 박스의 translation을 center로 설정
-    for sample_token in pred_boxes.sample_tokens:
-        for box in pred_boxes[sample_token]:
-            if (hasattr(box, 'translation') and box.translation is not None and
-                    hasattr(box, 'size') and box.size is not None and
-                    hasattr(box, 'rotation') and box.rotation is not None):
-                center_translation = np.array(box.translation)
+    for sample_token_iter in sample_tokens_to_process:
+        for boxes in [gaussian_boxes, pred_boxes, gt_boxes]:
+            if boxes is not None and sample_token_iter in boxes.sample_tokens:
+                for box in boxes[sample_token_iter]:
+                    if (hasattr(box, 'translation') and box.translation is not None and
+                            hasattr(box, 'size') and box.size is not None and
+                            hasattr(box, 'rotation') and box.rotation is not None):
+                        center_translation = np.array(box.translation)
+                        break
+                if center_translation is not None:
+                    break
+            if center_translation is not None:
                 break
         if center_translation is not None:
             break
@@ -509,53 +604,44 @@ def visualize_ego_translations_open3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes
         print("기준이 될 박스를 찾을 수 없습니다.")
         return
 
-    # Prediction boxes (Red)
-    for sample_token in pred_boxes.sample_tokens:
-        for box in pred_boxes[sample_token]:
-            if max_boxes > 0 and pred_count >= max_boxes:
-                break  # 개수 제한 도달
-            if (hasattr(box, 'translation') and box.translation is not None and
-                    hasattr(box, 'size') and box.size is not None and
-                    hasattr(box, 'rotation') and box.rotation is not None):
-                
-                # center 기준으로 상대 위치 계산
-                relative_translation = np.array(box.translation) - center_translation
-                corners = get_box_corners(relative_translation, box.size, box.rotation)
-                geometries.append(create_open3d_box(corners, (1.0, 0.0, 0.0)))  # Red
+    # LiDAR 포인트 클라우드 추가 (특정 sample이 지정된 경우에만)
+    if show_lidar and nusc is not None and sample_token is not None:
+        print(f"🔍 LiDAR 포인트 클라우드 로딩 중... (sample: {sample_token[:8]}...)")
+        lidar_points = load_lidar_pointcloud(nusc, sample_token)
+        if lidar_points is not None:
+            print(f"✅ {len(lidar_points):,}개의 LiDAR 포인트를 로드했습니다.")  
+            # Open3D PointCloud 생성 및 추가
+            lidar_pcd = create_open3d_pointcloud(lidar_points, 
+                                               color=(0.5, 0.5, 0.5),  # 회색
+                                               max_points=max_lidar_points)
+            geometries.append(lidar_pcd)
+        else:
+            print("⚠️ LiDAR 포인트 클라우드를 로드할 수 없습니다.")
+    elif show_lidar and sample_token is None:
+        print("⚠️ LiDAR 시각화는 특정 sample이 지정된 경우에만 가능합니다. --sample_token을 사용하세요.")
 
-                # NEW: 앞면 중심점 시각화 (Red)
-                # front_center = np.mean(corners[4:8], axis=0)
-                front_center = (corners[1] + corners[6]) / 2 
-                geometries.append(create_open3d_sphere(front_center, radius=0.1, color=(1.0, 0.0, 0.0)))
+    # 특정 sample 시각화 시 ego 좌표계 사용, 전체 시각화 시 global 좌표계 사용
+    use_ego_coordinates = sample_token is not None and len(sample_tokens_to_process) == 1
 
-                pred_count += 1
-        if max_boxes > 0 and pred_count >= max_boxes:
-            break
+    # 박스들을 geometries에 추가
+    gaussian_geometries, gaussian_count = _add_boxes_to_geometries(
+        gaussian_boxes, sample_tokens_to_process, center_translation, 
+        use_ego_coordinates, (1.0, 0.0, 0.0), max_boxes)  # Red
+    geometries.extend(gaussian_geometries)
+    
+    remaining_boxes = max_boxes - gaussian_count if max_boxes > 0 else -1
+    pred_geometries, pred_count = _add_boxes_to_geometries(
+        pred_boxes, sample_tokens_to_process, center_translation, 
+        use_ego_coordinates, (0.0, 0.0, 1.0), remaining_boxes)  # Blue
+    geometries.extend(pred_geometries)
+    
+    remaining_boxes = max_boxes - gaussian_count - pred_count if max_boxes > 0 else -1
+    gt_geometries, gt_count = _add_boxes_to_geometries(
+        gt_boxes, sample_tokens_to_process, center_translation, 
+        use_ego_coordinates, (0.0, 0.0, 0.0), remaining_boxes)  # Black
+    geometries.extend(gt_geometries)
 
-    # Ground truth boxes (Blue)
-    for sample_token in gt_boxes.sample_tokens:
-        for box in gt_boxes[sample_token]:
-            if max_boxes > 0 and gt_count >= max_boxes:
-                break  # 개수 제한 도달
-            if (hasattr(box, 'translation') and box.translation is not None and
-                    hasattr(box, 'size') and box.size is not None and
-                    hasattr(box, 'rotation') and box.rotation is not None):
-
-                # center 기준으로 상대 위치 계산
-                relative_translation = np.array(box.translation) - center_translation
-                corners = get_box_corners(relative_translation, box.size, box.rotation)
-                geometries.append(create_open3d_box(corners, (0.0, 0.0, 1.0)))  # Blue
-
-                # NEW: 앞면 중심점 시각화 (Blue)
-                # front_center = np.mean(corners[4:8], axis=0)
-                front_center = (corners[1] + corners[6]) / 2 
-                geometries.append(create_open3d_sphere(front_center, radius=0.1, color=(0.0, 0.0, 1.0)))
-
-                gt_count += 1
-        if max_boxes > 0 and gt_count >= max_boxes:
-            break
-
-    if pred_count == 0 and gt_count == 0:
+    if gaussian_count == 0 and pred_count == 0 and gt_count == 0:
         print("시각화할 박스가 없습니다.")
         return
 
@@ -564,9 +650,11 @@ def visualize_ego_translations_open3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes
     subtitle_parts = []
     if scene_name:
         subtitle_parts.append(f"Scene: {scene_name}")
+    if sample_token:
+        subtitle_parts.append(f"Sample: {sample_token[:8]}...")
     if score_threshold is not None and score_threshold > 0:
         subtitle_parts.append(f"Score≥{score_threshold}")
-    subtitle_parts.append(f"Pred: {pred_count}, GT: {gt_count}")
+    subtitle_parts.append(f"Gaussian: {gaussian_count}, Pred: {pred_count}, GT: {gt_count}")
     if subtitle_parts:
         window_name += " (" + " | ".join(subtitle_parts) + ")"
 
@@ -576,23 +664,132 @@ def visualize_ego_translations_open3d(pred_boxes: EvalBoxes, gt_boxes: EvalBoxes
 
     # 1) 오프스크린 렌더링 모드가 필요한 경우 (save_path 지정 or GUI 사용 불가)
     if save_path is not None:
-        vis = o3d.visualization.Visualizer()
-        vis.create_window(visible=False)
-        for g in geometries:
-            vis.add_geometry(g)
-        vis.poll_events()
-        vis.update_renderer()
-        vis.capture_screen_image(save_path)
-        vis.destroy_window()
-        print(f"✅ 3D 시각화 결과가 '{save_path}' 로 저장되었습니다.")
+        try:
+            # 저장 경로 디렉토리 생성
+            save_dir_path = os.path.dirname(save_path)
+            if save_dir_path and not os.path.exists(save_dir_path):
+                os.makedirs(save_dir_path, exist_ok=True)
+                print(f"📁 디렉토리 생성: {save_dir_path}")
+            
+            print(f"🎨 오프스크린 렌더링 시작... ({len(geometries)}개 객체)")
+            
+            vis = o3d.visualization.Visualizer()  # type: ignore
+            # vis.create_window(visible=False, width=1920, height=1080)
+            vis.create_window(visible=False, width=3840, height=2160)
+            
+            # 시각화 윈도우 설정
+            _setup_visualization_window(vis, geometries)
+            
+            # 이미지 렌더링 및 저장
+            success = _render_and_save_image(vis, save_path)
+            
+            vis.destroy_window()
+            
+            # 결과 확인 및 피드백
+            if success and os.path.exists(save_path):
+                file_size = os.path.getsize(save_path)
+                if file_size > 1000:  # 최소 1KB 이상이어야 유효한 이미지
+                    print(f"✅ 3D 시각화 결과 저장 완료:")
+                    print(f"   📂 경로: {save_path}")
+                    print(f"   📊 크기: {file_size:,} bytes")
+                else:
+                    print(f"⚠️ 이미지 파일이 너무 작습니다: {file_size} bytes")
+            else:
+                print(f"❌ 이미지 저장 실패: {save_path}")
+                
+        except Exception as e:
+            print(f"⚠️ 전체 렌더링 과정 실패: {e}")
+            print(f"   💡 대안: GUI 모드로 시각화하려면 --save_plot 옵션을 제거하세요.")
         return
 
     # 2) 일반 윈도우 모드 (GUI 가능 환경)
     try:
-        o3d.visualization.draw_geometries(geometries, window_name=window_name)
+        o3d.visualization.draw_geometries(geometries, window_name=window_name)  # type: ignore
     except Exception as e:
         print("⚠️ Open3D GUI 창 생성에 실패했습니다. (Headless 환경으로 판단)\n   → 오류 메시지:", e)
         print("대신 오프스크린 모드로 이미지를 저장합니다. '--save_plot <경로>' 인자를 지정하세요.")
+
+
+def visualize_all_samples_individually(gaussian_boxes: Optional[EvalBoxes] = None, 
+                                      pred_boxes: Optional[EvalBoxes] = None, 
+                                      gt_boxes: Optional[EvalBoxes] = None, 
+                                      scene_name: Optional[str] = None,
+                                      score_threshold: Optional[float] = None, 
+                                      save_dir: Optional[str] = None, 
+                                      max_boxes: int = -1,
+                                      max_samples: int = -1,
+                                      show_lidar: bool = False,
+                                      nusc: Optional[NuScenes] = None,
+                                      max_lidar_points: int = 50000) -> None:
+    """모든 sample을 개별적으로 시각화합니다.
+    
+    Args:
+        gaussian_boxes: Gaussian 박스들
+        pred_boxes: 예측 박스들  
+        gt_boxes: Ground truth 박스들
+        scene_name: scene 이름
+        score_threshold: score threshold
+        save_dir: 저장할 디렉토리 (지정하면 각 sample별로 파일 저장)
+        max_boxes: 샘플당 최대 박스 개수
+        max_samples: 처리할 최대 샘플 개수
+        show_lidar: LiDAR 포인트 클라우드 표시 여부
+        nusc: NuScenes 객체 (LiDAR 데이터 로딩에 필요)
+        max_lidar_points: 최대 LiDAR 포인트 개수
+    """
+    # 시간 순서대로 sample_tokens 수집
+    if nusc and scene_name:
+        scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
+        if not scene_sample_tokens:
+            print(f"⚠️ Scene '{scene_name}'을 찾을 수 없습니다.")
+            return
+        
+        # 실제 박스 데이터가 있는 sample_tokens만 필터링
+        available_sample_tokens = _get_available_sample_tokens(gaussian_boxes, pred_boxes, gt_boxes)
+        sample_tokens = [token for token in scene_sample_tokens if token in available_sample_tokens]
+    else:
+        # nusc나 scene_name이 없는 경우 기존 방식 사용 (순서 보장 안됨)
+        if gt_boxes:    
+            sample_tokens = list(gt_boxes.sample_tokens)
+        elif pred_boxes:
+            sample_tokens = list(pred_boxes.sample_tokens)
+        elif gaussian_boxes:
+            sample_tokens = list(gaussian_boxes.sample_tokens)
+        else:
+            sample_tokens = []
+    
+    if max_samples > 0:
+        sample_tokens = sample_tokens[:max_samples]
+    
+    print(f"📊 총 {len(sample_tokens)}개의 sample을 개별적으로 시각화합니다...")
+    
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        print(f"📁 결과 파일들을 '{save_dir}' 디렉토리에 저장합니다.")
+    
+    for i, sample_token in enumerate(sample_tokens):
+        print(f"🎯 Processing sample {i+1}/{len(sample_tokens)}: {sample_token}")
+        
+        save_path = None
+        if save_dir:
+            save_path = _create_save_path(save_dir, scene_name, i, sample_token)
+        
+        visualize_ego_translations_open3d(
+            gaussian_boxes=gaussian_boxes,
+            pred_boxes=pred_boxes, 
+            gt_boxes=gt_boxes,
+            scene_name=scene_name,
+            score_threshold=score_threshold,
+            save_path=save_path,
+            max_boxes=max_boxes,
+            sample_token=sample_token,
+            show_lidar=show_lidar,
+            nusc=nusc,
+            max_lidar_points=max_lidar_points
+        )
+        
+        if not save_dir:
+            # GUI 모드일 때는 사용자 입력 대기
+            input("다음 sample로 이동하려면 Enter를 누르세요... (Ctrl+C로 종료)")
 
 # -----------------------------------------------------------------------------
 # 박스 필터링 유틸리티 (Score / Scene)
@@ -666,15 +863,230 @@ def filter_boxes_by_scene(nusc: NuScenes, boxes: EvalBoxes, scene_name: str) -> 
     return filtered_boxes
 
 
+def _get_scene_sample_tokens_chronologically(nusc: NuScenes, scene_name: str) -> List[str]:
+    """Scene의 sample_tokens를 시간순으로 가져옵니다.
+    
+    Args:
+        nusc: NuScenes 객체
+        scene_name: scene 이름
+        
+    Returns:
+        시간순으로 정렬된 sample_tokens 리스트
+    """
+    # scene 찾기
+    scene_token = None
+    for scene in nusc.scene:
+        if scene['name'] == scene_name:
+            scene_token = scene['token']
+            break
+    
+    if not scene_token:
+        return []
+    
+    # scene의 첫 번째 샘플부터 시작하여 시간순으로 수집
+    scene = nusc.get('scene', scene_token)
+    sample = nusc.get('sample', scene['first_sample_token'])
+    scene_sample_tokens = []
+    
+    while True:
+        scene_sample_tokens.append(sample['token'])
+        if sample['next'] == '':
+            break
+        sample = nusc.get('sample', sample['next'])
+    
+    return scene_sample_tokens
+
+
+def _get_available_sample_tokens(gaussian_boxes: Optional[EvalBoxes], 
+                                pred_boxes: Optional[EvalBoxes], 
+                                gt_boxes: Optional[EvalBoxes]) -> set:
+    """사용 가능한 sample_tokens를 모든 박스 타입에서 수집합니다.
+    
+    Args:
+        gaussian_boxes: Gaussian 박스들
+        pred_boxes: 예측 박스들
+        gt_boxes: Ground truth 박스들
+        
+    Returns:
+        사용 가능한 sample_tokens의 set
+    """
+    available_sample_tokens = set()
+    for boxes in [gaussian_boxes, pred_boxes, gt_boxes]:
+        if boxes is not None:
+            available_sample_tokens.update(boxes.sample_tokens)
+    return available_sample_tokens
+
+
+def _setup_visualization_window(vis: o3d.visualization.Visualizer, 
+                               geometries: List,
+                               background_color: Tuple[float, float, float] = (1, 1, 1)) -> None:
+    """시각화 윈도우의 렌더링 옵션과 카메라를 설정합니다.
+    
+    Args:
+        vis: Open3D Visualizer 객체
+        geometries: 시각화할 기하학적 객체들
+        background_color: 배경색 (기본: 흰색)
+    """
+    # 렌더링 옵션 설정
+    render_option = vis.get_render_option()
+    render_option.background_color = np.array(background_color)
+    render_option.point_size = 6.0
+    
+    # 기하학적 객체들 추가
+    for g in geometries:
+        vis.add_geometry(g)
+    
+    # 카메라 시점: Top-Down(조감) 뷰로 변경
+    ctr = vis.get_view_control()
+    ctr.set_front([0, 0, -1])   # 카메라가 -Z 방향(아래)으로 바라보도록 설정
+    ctr.set_up([0, -1, 0])      # 화면의 위쪽을 -Y 방향으로 맞춤 (XY 평면 기준)
+    ctr.set_lookat([0, 0, 0])   # 원점(센서 위치)을 바라보도록 설정
+    
+    # 직교 투영(Orthographic Projection) 활성화
+    ctr.change_field_of_view(step=-500)  # FOV를 매우 작게 설정하여 직교 투영 효과
+    ctr.set_zoom(0.15)  # 적절한 줌 레벨 설정
+
+
+def _render_and_save_image(vis: o3d.visualization.Visualizer, save_path: str) -> bool:
+    """이미지를 렌더링하고 저장합니다.
+    
+    Args:
+        vis: Open3D Visualizer 객체
+        save_path: 저장할 파일 경로
+        
+    Returns:
+        저장 성공 여부
+    """
+    # 여러 번 렌더링하여 안정화
+    for _ in range(3):
+        vis.poll_events()
+        vis.update_renderer()
+    
+    # Float buffer로 이미지 캡처 (더 안정적)
+    try:
+        image = vis.capture_screen_float_buffer(do_render=True)
+        image_np = np.asarray(image)
+        
+        # Float buffer를 0-255 범위로 변환
+        if image_np.max() <= 1.0:
+            image_np = (image_np * 255).astype(np.uint8)
+        
+        # PIL로 이미지 저장
+        from PIL import Image
+        pil_image = Image.fromarray(image_np)
+        pil_image.save(save_path)
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Float buffer 방법 실패: {e}")
+        # 최후의 수단: 기본 capture_screen_image
+        return vis.capture_screen_image(save_path)
+
+
+def _add_boxes_to_geometries(boxes: Optional[EvalBoxes], 
+                            sample_tokens_to_process: List[str],
+                            center_translation: np.ndarray,
+                            use_ego_coordinates: bool,
+                            color: Tuple[float, float, float],
+                            max_boxes: int) -> Tuple[List, int]:
+    """박스들을 기하학적 객체로 변환하여 geometries에 추가합니다.
+    
+    Args:
+        boxes: 박스 데이터
+        sample_tokens_to_process: 처리할 sample_tokens
+        center_translation: 기준 중심점
+        use_ego_coordinates: ego 좌표계 사용 여부
+        color: 박스 색상
+        max_boxes: 최대 박스 개수
+        
+    Returns:
+        (geometries 리스트, 추가된 박스 개수)
+    """
+    geometries = []
+    box_count = 0
+    
+    if boxes is None:
+        return geometries, box_count
+    
+    for sample_token_iter in sample_tokens_to_process:
+        if sample_token_iter not in boxes.sample_tokens:
+            continue
+            
+        for box in boxes[sample_token_iter]:
+            if max_boxes > 0 and box_count >= max_boxes:
+                break
+                
+            if not (hasattr(box, 'translation') and box.translation is not None and
+                    hasattr(box, 'size') and box.size is not None and
+                    hasattr(box, 'rotation') and box.rotation is not None):
+                continue
+            
+            # 좌표계 선택
+            if use_ego_coordinates and hasattr(box, 'ego_translation') and hasattr(box, 'ego_rotation'):
+                translation = box.ego_translation  # type: ignore
+                rotation = getattr(box, 'ego_rotation')  # type: ignore
+                relative_translation = np.array(translation)
+            else:
+                relative_translation = np.array(box.translation) - center_translation
+                rotation = box.rotation
+            
+            # 박스 생성 및 추가
+            corners = get_box_corners(relative_translation, box.size, rotation)
+            geometries.append(create_open3d_box(corners, color))
+            
+            # 앞면 중심점 시각화
+            front_center = (corners[1] + corners[6]) / 2 
+            geometries.append(create_open3d_sphere(front_center, radius=0.3, color=color))
+            
+            box_count += 1
+        
+        if max_boxes > 0 and box_count >= max_boxes:
+            break
+    
+    return geometries, box_count
+
+
+def _create_save_path(save_dir: str, scene_name: Optional[str], 
+                     sample_index: int, sample_token: str) -> str:
+    """저장 경로를 생성합니다.
+    
+    Args:
+        save_dir: 저장 디렉토리
+        scene_name: scene 이름 (있으면 하위 폴더 생성)
+        sample_index: 샘플 인덱스
+        sample_token: 샘플 토큰
+        
+    Returns:
+        생성된 저장 경로
+    """
+    if scene_name:
+        scene_dir = os.path.join(save_dir, scene_name)
+        os.makedirs(scene_dir, exist_ok=True)
+        return os.path.join(scene_dir, f"sample_{sample_index:02d}_{sample_token}.png")
+    else:
+        return os.path.join(save_dir, f"sample_{sample_index:02d}_{sample_token}.png")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Convert NuScenes detection JSON to pandas DataFrame")
+        description="Visualize Gaussian, Prediction, and Ground Truth boxes")
     parser.add_argument(
-        "--pred",
+        "--gaussian_boxes",
         type=str,
-        default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/keyframe_instance_poses_data/all_poses.json",
-        # default="/workspace/drivestudio/output/feasibility_check/run_original_scene_0_date_0529_try_1/test/results_nusc.json",
-        help="Path to prediction json",
+        default='/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json',
+        help="Path to gaussian boxes json file",
+    )
+    parser.add_argument(
+        "--pred_boxes",
+        type=str,
+        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar_selected_tar.json',
+        help="Path to prediction boxes json file",
+    )
+    parser.add_argument(
+        "--gt_boxes",
+        type=str,
+        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src_selected_tar.json',
+        help="Path to ground truth boxes json file",
     )
     parser.add_argument(
         "--version",
@@ -691,70 +1103,162 @@ def main() -> None:
     parser.add_argument(
         "--verbose",
         type=bool,
-        default=True,
+        default=False,
         help="Verbose",
     )
     parser.add_argument(
         "--save_plot",
         type=str,
-        default=None,
+        # default=None,
+        default='/workspace/drivestudio/output/feasibility_check/updated/plots',
         help="Path to save the 3D visualization plot"
     )
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-0061',
-        help="Scene name to filter boxes"
+        default='scene-1100',
+        # default=None,
+        help="Scene name to filter boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
+                                                "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
+                                                "'scene-1094', 'scene-1100')",
     )
     parser.add_argument(
         "--score_threshold",
         type=float,
-        default=0.5,
-        help="Minimum detection score threshold for pred_boxes"
+        default=0.0,
+        help="Minimum detection score threshold for prediction boxes"
     )
     parser.add_argument(
         "--max_boxes",
         type=int,
-        default=500,
+        default=1500,
         help="시각화할 최대 박스 개수 (<=0 이면 제한 없음)"
+    )
+    parser.add_argument(
+        "--sample_token",
+        type=str,
+        default=None,
+        help="특정 sample만 시각화 (sample token 지정)"
+    )
+    parser.add_argument(
+        "--visualize_individual_samples",
+        type=bool,
+        default=True,
+        help="모든 sample을 개별적으로 시각화"
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=-1,
+        help="개별 시각화할 최대 sample 개수 (<=0 이면 제한 없음)"
+    )
+    parser.add_argument(
+        "--show_lidar",
+        type=bool,
+        default=True,
+        help="LiDAR 포인트 클라우드도 함께 시각화"
+    )
+    parser.add_argument(
+        "--max_lidar_points",
+        type=int,
+        default=50000,
+        help="시각화할 최대 LiDAR 포인트 개수"
     )
 
     args = parser.parse_args()
 
-    nusc = NuScenes(
-        version=args.version, dataroot=args.dataroot, verbose=args.verbose)
-    eval_set_map = {
-        'v1.0-mini': 'mini_val',
-        'v1.0-trainval': 'val',
-    }
+    # 최소 하나의 박스 파일은 제공되어야 함
+    if not any([args.gaussian_boxes, args.pred_boxes, args.gt_boxes]):
+        print("⚠️ 최소 하나의 박스 파일을 제공해야 합니다 (--gaussian_boxes, --pred_boxes, --gt_boxes 중 하나)")
+        return
 
-    assert os.path.exists(args.pred), 'Error: The result file does not exist!'
+    nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=args.verbose)
+    
     config = config_factory('detection_cvpr_2019')
 
-    pred_boxes, meta = load_prediction(args.pred, 
-                                        config.max_boxes_per_sample, 
-                                        DetectionBox,
-                                        verbose=args.verbose)
+    gaussian_boxes = None
+    pred_boxes = None
+    gt_boxes = None
 
-    gt_boxes, sample_ann_tokens = load_gt(nusc, eval_set_map[args.version], DetectionBox, verbose=args.verbose)
-    
-    # Filter pred_boxes by score
-    if args.score_threshold > 0:
+    # Load gaussian boxes if provided
+    if args.gaussian_boxes and os.path.exists(args.gaussian_boxes):
+        print(f"📊 Gaussian boxes 로딩 중: {args.gaussian_boxes}")
+        gaussian_boxes, _ = load_prediction(args.gaussian_boxes, 
+                                           config.max_boxes_per_sample, 
+                                           DetectionBox,
+                                           verbose=args.verbose)
+
+    # Load prediction boxes if provided
+    if args.pred_boxes and os.path.exists(args.pred_boxes):
+        print(f"📊 Prediction boxes 로딩 중: {args.pred_boxes}")
+        pred_boxes, _ = load_prediction(args.pred_boxes, 
+                                       config.max_boxes_per_sample, 
+                                       DetectionBox,
+                                       verbose=args.verbose)
+
+    # Load ground truth boxes if provided
+    if args.gt_boxes and os.path.exists(args.gt_boxes):
+        print(f"📊 Ground truth boxes 로딩 중: {args.gt_boxes}")
+        gt_boxes, _ = load_prediction(args.gt_boxes, 
+                                     config.max_boxes_per_sample, 
+                                     DetectionBox,
+                                     verbose=args.verbose)
+
+    # Filter by score threshold if prediction boxes exist
+    if pred_boxes and args.score_threshold > 0:
         print(f"📊 Score threshold {args.score_threshold}로 pred_boxes 필터링 중...")
         pred_boxes = filter_boxes_by_score(pred_boxes, args.score_threshold)
     
     # Filter boxes by scene
     if args.scene_name:
-        pred_boxes = filter_boxes_by_scene(nusc, pred_boxes, args.scene_name)
-        gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, args.scene_name)
-    
-    assert set(pred_boxes.sample_tokens) == set(gt_boxes.sample_tokens), \
-        "Samples in split doesn't match samples in predictions."
+        if gaussian_boxes:
+            gaussian_boxes = filter_boxes_by_scene(nusc, gaussian_boxes, args.scene_name)
+        if pred_boxes:
+            pred_boxes = filter_boxes_by_scene(nusc, pred_boxes, args.scene_name)
+        if gt_boxes:
+            gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, args.scene_name)
 
-    
+    # Add ego pose information to all boxes
+    if gaussian_boxes:
+        gaussian_boxes = add_ego_pose(nusc, gaussian_boxes)
+    if pred_boxes:
+        pred_boxes = add_ego_pose(nusc, pred_boxes)
+    if gt_boxes:
+        gt_boxes = add_ego_pose(nusc, gt_boxes)
+
     # Open3D 3D 시각화
-    print("Open3D 3D 시각화를 생성하고 있습니다...")
-    visualize_ego_translations_open3d(pred_boxes, gt_boxes, args.scene_name, args.score_threshold, args.save_plot, args.max_boxes)
+    if args.visualize_individual_samples:
+        # 모든 sample을 개별적으로 시각화
+        print("모든 sample을 개별적으로 시각화합니다...")
+        visualize_all_samples_individually(
+            gaussian_boxes=gaussian_boxes,
+            pred_boxes=pred_boxes, 
+            gt_boxes=gt_boxes,
+            scene_name=args.scene_name,
+            score_threshold=args.score_threshold,
+            save_dir=args.save_plot,
+            max_boxes=args.max_boxes,
+            max_samples=args.max_samples,
+            show_lidar=args.show_lidar,
+            nusc=nusc,
+            max_lidar_points=args.max_lidar_points
+        )
+    else:
+        # 기존 방식: 모든 박스를 한번에 시각화 또는 특정 sample만 시각화
+        print("Open3D 3D 시각화를 생성하고 있습니다...")
+        visualize_ego_translations_open3d(
+            gaussian_boxes=gaussian_boxes,
+            pred_boxes=pred_boxes, 
+            gt_boxes=gt_boxes, 
+            scene_name=args.scene_name, 
+            score_threshold=args.score_threshold, 
+            save_path=args.save_plot, 
+            max_boxes=args.max_boxes,
+            sample_token=args.sample_token,
+            show_lidar=args.show_lidar,
+            nusc=nusc,
+            max_lidar_points=args.max_lidar_points
+        )
 
 if __name__ == "__main__":
     main()
