@@ -5,8 +5,7 @@ docker build -t drivestudio:0.0.1 .
 ## Run Docker Container
 xhost +local:root
 docker run --gpus all -it --shm-size=16g \
-    -v "/home/aimlab/seongjun_ws/docker_ws/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
-    -v "/media/aimlab/HDD02_1TB:/workspace/drivestudio/data" \
+    -v "/media/aimlab/HDD00/users/seongjun/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
     -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
     --name drivestudio \
@@ -17,7 +16,7 @@ conda activate drivestudio
 
 # 3. Run OmniRe training
 ## Set Configuration
-PROJECT_NAME="feasibility_check_0618"
+PROJECT_NAME="feasibility_check_0619"
 RUN_NAME="run_updated_scene_0_date_0618_try_1"
 DATASET_NAME="nuscenes/6cams_update"
 ## Optimization
