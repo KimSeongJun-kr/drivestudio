@@ -501,9 +501,17 @@ def main() -> None:
         "--pred",
         type=str,
         # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json",
-        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_matched_selected_src.json",
-        default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar.json",
+        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_selected_tar1.json",
+        # default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar2.json",
         help="Path to prediction json",
+    )
+    parser.add_argument(
+        "--scene_name",
+        type=str,
+        default=None,
+        help="Scene name to evaluate boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
+                                                "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
+                                                "'scene-1094', 'scene-1100')",
     )
     parser.add_argument(
         "--version",
@@ -523,12 +531,7 @@ def main() -> None:
         default=False,
         help="Verbose",
     )
-    parser.add_argument(
-        "--scene_name",
-        type=str,
-        default=None,
-        help="Scene name to filter boxes (e.g., 'scene-0061')",
-    )
+
 
     args = parser.parse_args()
 
@@ -538,38 +541,17 @@ def main() -> None:
         'v1.0-mini': 'mini_val',
         'v1.0-trainval': 'val',
     }
-    
-    # nusc_eval = NuScenesEval(
-    #     nusc,
-    #     config=config_factory('detection_cvpr_2019'),
-    #     result_path=args.pred,
-    #     eval_set=eval_set_map[args.version],
-    #     output_dir=str(Path(args.pred).parent),
-    #     verbose=args.verbose)
-    # nusc_eval.main(plot_examples=20, render_curves=True)
-    # return
 
     assert os.path.exists(args.pred), 'Error: The result file does not exist!'
     config = config_factory('detection_cvpr_2019')
 
+    print(f"Loading prediction from: {args.pred}")
     pred_boxes, meta = load_prediction(args.pred, 
                                         config.max_boxes_per_sample, 
                                         DetectionBox,
                                         verbose=args.verbose)
 
     gt_boxes, sample_ann_tokens = load_gt(nusc, eval_set_map[args.version], DetectionBox, verbose=args.verbose)
-
-    # # Filter boxes by scene if scene_name is provided
-    # if args.scene_name:
-    #     if args.verbose:
-    #         print(f"Filtering boxes by scene: {args.scene_name}")
-    #     pred_boxes = filter_boxes_by_scene(nusc, pred_boxes, args.scene_name)
-    #     gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, args.scene_name)
-
-
-
-    # assert set(pred_boxes.sample_tokens) == set(gt_boxes.sample_tokens), \
-    #     "Samples in split doesn't match samples in predictions."
 
     # Filter boxes by scene if scene_name is provided
     if args.scene_name:
@@ -593,12 +575,15 @@ def main() -> None:
     gt_boxes = add_center_dist(nusc, gt_boxes)
 
     # Filter boxes (distance, points per box, etc.).
+    num_pred_boxes_before_filtering = len(pred_boxes.all)
     if args.verbose:
         print('Filtering predictions')
     pred_boxes = filter_eval_boxes(nusc, pred_boxes, 50, verbose=args.verbose)
     if args.verbose:
         print('Filtering ground truth annotations')
     gt_boxes = filter_eval_boxes(nusc, gt_boxes, 50, verbose=args.verbose)
+
+    print(f"num pred boxes before filtering: {num_pred_boxes_before_filtering}, after filtering: {len(pred_boxes.all)}")
 
     sample_tokens = gt_boxes.sample_tokens
     
@@ -610,7 +595,7 @@ def main() -> None:
     print('Accumulating metric data...')
     metric_data_list = DetectionMetricDataList()
     all_matched_pred_boxes = defaultdict(list)
-    dist_th = 4.0
+    dist_th = 1.0
 
     md, match_data_copy, match_pred_boxes = accumulate(gt_boxes, pred_boxes, sample_ann_tokens, config.dist_fcn_callable, dist_th)
     for sample_token, matched_pred_boxes in match_pred_boxes.items():
