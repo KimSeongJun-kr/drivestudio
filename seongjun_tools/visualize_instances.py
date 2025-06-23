@@ -1073,19 +1073,19 @@ def main() -> None:
     parser.add_argument(
         "--gaussian_boxes",
         type=str,
-        default='/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json',
+        default='/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar2.json',
         help="Path to gaussian boxes json file",
     )
     parser.add_argument(
         "--pred_boxes",
         type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar_selected_tar.json',
+        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_selected_tar1.json',
         help="Path to prediction boxes json file",
     )
     parser.add_argument(
         "--gt_boxes",
         type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src_selected_tar.json',
+        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json',
         help="Path to ground truth boxes json file",
     )
     parser.add_argument(
@@ -1116,9 +1116,9 @@ def main() -> None:
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-1100',
+        default='scene-0655',
         # default=None,
-        help="Scene name to filter boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
+        help="Scene name to visualize boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
                                                 "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
                                                 "'scene-1094', 'scene-1100')",
     )
@@ -1131,7 +1131,7 @@ def main() -> None:
     parser.add_argument(
         "--max_boxes",
         type=int,
-        default=1500,
+        default=2000,
         help="시각화할 최대 박스 개수 (<=0 이면 제한 없음)"
     )
     parser.add_argument(

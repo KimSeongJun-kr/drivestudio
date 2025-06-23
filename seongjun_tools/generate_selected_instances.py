@@ -275,29 +275,21 @@ def main() -> None:
     parser.add_argument(
         "--src",
         type=str,
-        # default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
-        default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar_selected_src.json",
-        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
-        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json",
+        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json",
         help="Path to source prediction json",
     )
     parser.add_argument(
-        "--tar",
+        "--tar1",
         type=str,
-        # default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
-        # default="/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar.json",        
-        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
-        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc.json",
-        # default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_selected_tar.json",
-        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json",
-        help="Path to destination gaussian poses json",
+        default="/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json",
+        help="Path to source prediction json",
     )
     parser.add_argument(
-        "--output_postfix",
+        "--tar2",
         type=str,
-        default="",
-        # default="_matched",
-        help="Postfix for output file name",
+        default="/workspace/drivestudio/output/feasibility_check/updated/poses.json",
+        # default=None,
+        help="Path to destination gaussian poses json",
     )
     parser.add_argument(
         "--version",
@@ -321,7 +313,7 @@ def main() -> None:
         "--scene_name",
         type=str,
         default=None,
-        default='scene-1100',
+        # default='scene-1100',
         help="Scene name to filter boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
                                                 "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
                                                 "'scene-1094', 'scene-1100')",
@@ -337,7 +329,9 @@ def main() -> None:
     }
     
     assert os.path.exists(args.src), 'Error: The result file does not exist!'
-    assert os.path.exists(args.tar), 'Error: The result file does not exist!'
+    assert os.path.exists(args.tar1), 'Error: The tar1 result file does not exist!'
+    if args.tar2:
+        assert os.path.exists(args.tar2), 'Error: The tar2 result file does not exist!'
     config = config_factory('detection_cvpr_2019')
 
     print('Loading src prediction...')
@@ -345,11 +339,21 @@ def main() -> None:
                                         config.max_boxes_per_sample, 
                                         DetectionBox,
                                         verbose=args.verbose)
-    print('Loading tar prediction...')
-    tar_pred_boxes, tar_meta = load_prediction(args.tar, 
+    print('Loading tar1 prediction...')
+    tar1_pred_boxes, tar1_meta = load_prediction(args.tar1, 
                                         config.max_boxes_per_sample, 
                                         DetectionBox,
                                         verbose=args.verbose)
+    
+    # tar2가 제공된 경우에만 로드
+    tar2_pred_boxes = None
+    tar2_meta = None
+    if args.tar2 and os.path.exists(args.tar2):
+        print('Loading tar2 prediction...')
+        tar2_pred_boxes, tar2_meta = load_prediction(args.tar2, 
+                                            config.max_boxes_per_sample, 
+                                            DetectionBox,
+                                            verbose=args.verbose)
 
 
     # Filter boxes by scene if scene_name is provided
@@ -357,40 +361,129 @@ def main() -> None:
         if args.verbose:
             print(f"Filtering boxes by scene: {args.scene_name}")
         src_pred_boxes = filter_boxes_by_scene(nusc, src_pred_boxes, args.scene_name)
-        tar_pred_boxes = filter_boxes_by_scene(nusc, tar_pred_boxes, args.scene_name)
+        tar1_pred_boxes = filter_boxes_by_scene(nusc, tar1_pred_boxes, args.scene_name)
+        if tar2_pred_boxes is not None:
+            tar2_pred_boxes = filter_boxes_by_scene(nusc, tar2_pred_boxes, args.scene_name)
     else:
-        # Filter to only include scenes that exist in both src and tar
+        # Filter to only include scenes that exist in both src and tar1
         if args.verbose:
-            print("Filtering to common scenes in both src and tar...")
-        src_pred_boxes, tar_pred_boxes = filter_boxes_by_common_scenes(nusc, src_pred_boxes, tar_pred_boxes)
+            print("Filtering to common scenes in both src and tar1...")
+        src_pred_boxes, tar1_pred_boxes = filter_boxes_by_common_scenes(nusc, src_pred_boxes, tar1_pred_boxes)
+        
+        # tar2가 있는 경우 tar2도 공통 scene으로 필터링
+        if tar2_pred_boxes is not None:
+            if args.verbose:
+                print("Filtering tar2 to common scenes...")
+            src_pred_boxes, tar2_pred_boxes = filter_boxes_by_common_scenes(nusc, src_pred_boxes, tar2_pred_boxes)
 
     # Note: We no longer require exact sample token matches since we're filtering by common scenes
     # but we can still check if there are any overlapping samples
-    common_samples = set(src_pred_boxes.sample_tokens).intersection(set(tar_pred_boxes.sample_tokens))
-    print(f"📊 Common samples between src and tar: {len(common_samples)}")
-    print(f"🔄 Total src samples: {len(src_pred_boxes.sample_tokens)}, Total tar samples: {len(tar_pred_boxes.sample_tokens)}")
+    common_samples_tar1 = set(src_pred_boxes.sample_tokens).intersection(set(tar1_pred_boxes.sample_tokens))
+    print(f"📊 Common samples between src and tar1: {len(common_samples_tar1)}")
+    print(f"🔄 Total src samples: {len(src_pred_boxes.sample_tokens)}, Total tar1 samples: {len(tar1_pred_boxes.sample_tokens)}")
+    
+    if tar2_pred_boxes is not None:
+        common_samples_tar2 = set(src_pred_boxes.sample_tokens).intersection(set(tar2_pred_boxes.sample_tokens))
+        print(f"📊 Common samples between src and tar2: {len(common_samples_tar2)}")
+        print(f"🔄 Total tar2 samples: {len(tar2_pred_boxes.sample_tokens)}")
     
     print('Matching boxes...')
-    all_matched_src_boxes = defaultdict(list)
-    all_matched_tar_boxes = defaultdict(list)
-    dist_th = 2.0
+    final_src_boxes_matched = defaultdict(list)
+    final_tar1_boxes_matched = defaultdict(list)
+    final_tar2_boxes_matched = defaultdict(list)
 
-    match_src_boxes, match_tar_boxes = correspondence(tar_pred_boxes, src_pred_boxes, config.dist_fcn_callable, dist_th)
-    for sample_token, matched_src_boxes in match_src_boxes.items():
-        all_matched_src_boxes[sample_token].extend(matched_src_boxes)
-    for sample_token, matched_tar_boxes in match_tar_boxes.items():
-        all_matched_tar_boxes[sample_token].extend(matched_tar_boxes)
-    selected_src_path = args.src.replace('.json', f'{args.output_postfix}_selected_src.json')
-    selected_tar_path = args.tar.replace('.json', f'_selected_tar.json')
+    src_boxes_matched_with_tar1 = defaultdict(list)
+    tar1_boxes_matched_with_src = defaultdict(list)
+
+    dist_th = 1.0
+
+    # tar1과의 매칭
+    matched_src_boxes, matched_tar1_boxes = correspondence(tar1_pred_boxes, src_pred_boxes, config.dist_fcn_callable, dist_th)
+    for sample_token, matched_src_boxes in matched_src_boxes.items():
+        src_boxes_matched_with_tar1[sample_token].extend(matched_src_boxes)
+    for sample_token, matched_tar1_boxes in matched_tar1_boxes.items():
+        tar1_boxes_matched_with_src[sample_token].extend(matched_tar1_boxes)
+
+    # tar2가 있는 경우 tar2와의 매칭도 수행
+    if tar2_pred_boxes is None:
+        final_src_boxes_matched = src_boxes_matched_with_tar1
+        final_tar1_boxes_matched = tar1_boxes_matched_with_src
+    else:
+        print('Matching with tar2...')
+        src_boxes_matched_with_tar2 = defaultdict(list)
+        tar2_boxes_matched_with_src = defaultdict(list)
+        matched_src_boxes, matched_tar2_boxes = correspondence(tar2_pred_boxes, src_pred_boxes, config.dist_fcn_callable, dist_th)
+        for sample_token, matched_src_boxes in matched_src_boxes.items():
+            src_boxes_matched_with_tar2[sample_token].extend(matched_src_boxes)
+        for sample_token, matched_tar2_boxes in matched_tar2_boxes.items():
+            tar2_boxes_matched_with_src[sample_token].extend(matched_tar2_boxes)
+        
+        # tar1과 tar2 모두에 매칭된 src 박스만 선택
+        print('Selecting boxes matched to both tar1 and tar2...')       
+        src_boxes_matched_with_tar1_tar2 = defaultdict(list)
+        tar1_boxes_matched_with_src_tar2 = defaultdict(list)
+        tar2_boxes_matched_with_src_tar1 = defaultdict(list)
+        
+        # tar1에 매칭된 src 박스들과 해당하는 tar1 박스들의 매핑 생성
+        src_to_tar1_mapping = defaultdict(dict)
+        for sample_token in src_boxes_matched_with_tar1.keys():
+            src_boxes = src_boxes_matched_with_tar1[sample_token]
+            tar1_boxes = tar1_boxes_matched_with_src[sample_token]
+            for src_box, tar1_box in zip(src_boxes, tar1_boxes):
+                src_key = (src_box.translation[0], src_box.translation[1], src_box.translation[2], 
+                          src_box.size[0], src_box.size[1], src_box.size[2])
+                src_to_tar1_mapping[sample_token][src_key] = tar1_box
+        
+        # tar2에 매칭된 src 박스들과 해당하는 tar2 박스들의 매핑 생성
+        src_to_tar2_mapping = defaultdict(dict)
+        for sample_token in src_boxes_matched_with_tar2.keys():
+            src_boxes = src_boxes_matched_with_tar2[sample_token]
+            tar2_boxes = tar2_boxes_matched_with_src[sample_token]
+            for src_box, tar2_box in zip(src_boxes, tar2_boxes):
+                src_key = (src_box.translation[0], src_box.translation[1], src_box.translation[2], 
+                          src_box.size[0], src_box.size[1], src_box.size[2])
+                src_to_tar2_mapping[sample_token][src_key] = tar2_box
+        
+        # tar1과 tar2 모두에 매칭된 src 박스들과 대응하는 tar1, tar2 박스들 선택
+        for sample_token, src_boxes in src_boxes_matched_with_tar2.items():
+            for src_box in src_boxes:
+                src_key = (src_box.translation[0], src_box.translation[1], src_box.translation[2], 
+                          src_box.size[0], src_box.size[1], src_box.size[2])
+                
+                # tar1에도 매칭된 src 박스인지 확인
+                if src_key in src_to_tar1_mapping[sample_token]:
+                    # src 박스 추가
+                    src_boxes_matched_with_tar1_tar2[sample_token].append(src_box)
+                    # 대응하는 tar1 박스 추가
+                    tar1_boxes_matched_with_src_tar2[sample_token].append(src_to_tar1_mapping[sample_token][src_key])
+                    # 대응하는 tar2 박스 추가
+                    tar2_boxes_matched_with_src_tar1[sample_token].append(src_to_tar2_mapping[sample_token][src_key])
+
+        final_src_boxes_matched = src_boxes_matched_with_tar1_tar2
+        final_tar1_boxes_matched = tar1_boxes_matched_with_src_tar2
+        final_tar2_boxes_matched = tar2_boxes_matched_with_src_tar1
+        print(f"✅ tar1과 tar2 모두에 매칭된 src 박스만 선택 완료")
+
+    selected_src_path = args.src.replace('.json', f'_selected_src.json')
+    selected_tar1_path = args.tar1.replace('.json', f'_selected_tar1.json')
     
-    write_prediction_file(all_matched_src_boxes, selected_src_path)
-    write_prediction_file(all_matched_tar_boxes, selected_tar_path)
+    write_prediction_file(final_src_boxes_matched, selected_src_path)
+    write_prediction_file(final_tar1_boxes_matched, selected_tar1_path)
     
-    print(f"✅ Selected instances are saved to {selected_src_path} and {selected_tar_path}")
+    print(f"✅ Selected instances are saved to {selected_src_path} and {selected_tar1_path}")
+    
+    if tar2_pred_boxes is not None:
+        selected_tar2_path = args.tar2.replace('.json', f'_selected_tar2.json')
+        write_prediction_file(final_tar2_boxes_matched, selected_tar2_path)
+        print(f"✅ Selected tar2 instances are saved to {selected_tar2_path}")
     
     # 전체 매칭된 박스의 개수 계산
-    total_matched_boxes = sum(len(boxes) for boxes in all_matched_src_boxes.values())
-    print(f"num src_pred: {len(src_pred_boxes.all)}, num tar_pred: {len(tar_pred_boxes.all)}, num matched: {total_matched_boxes}")
+    total_matched_boxes = sum(len(boxes) for boxes in final_src_boxes_matched.values())
+    
+    if tar2_pred_boxes is not None:
+        print(f"num src_pred: {len(src_pred_boxes.all)}, num tar1_pred: {len(tar1_pred_boxes.all)}, num tar2_pred: {len(tar2_pred_boxes.all)}, num matched (both tar1 and tar2): {total_matched_boxes}")
+    else:
+        print(f"num src_pred: {len(src_pred_boxes.all)}, num tar1_pred: {len(tar1_pred_boxes.all)}, num matched: {total_matched_boxes}")
 
 if __name__ == "__main__":
     main()

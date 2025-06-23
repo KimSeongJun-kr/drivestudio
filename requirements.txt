@@ -31,3 +31,5 @@ gdown
 
 nerfview==0.0.3
 lpips==0.1.4
+
+nuscenes-devkit==1.1.11
