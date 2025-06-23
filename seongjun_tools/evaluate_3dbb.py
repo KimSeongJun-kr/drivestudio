@@ -20,7 +20,10 @@ from nuscenes.eval.tracking.data_classes import TrackingBox
 from nuscenes.eval.common.data_classes import EvalBoxes
 from nuscenes.eval.common.loaders import load_prediction, add_center_dist, _get_box_class_field
 from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
-from nuscenes.utils.splits import create_splits_scenes
+import sys
+sys.path.append('/workspace/drivestudio')
+from seongjun_tools.splits import create_splits_scenes
+# from nuscenes.utils.splits import create_splits_scenes
 from nuscenes.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import points_in_box
 from pyquaternion import Quaternion
