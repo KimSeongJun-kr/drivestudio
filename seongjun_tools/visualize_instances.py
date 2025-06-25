@@ -938,8 +938,8 @@ def _setup_visualization_window(vis: o3d.visualization.Visualizer,
     
     # 카메라 시점: Top-Down(조감) 뷰로 변경
     ctr = vis.get_view_control()
-    ctr.set_front([0, 0, -1])   # 카메라가 -Z 방향(아래)으로 바라보도록 설정
-    ctr.set_up([0, -1, 0])      # 화면의 위쪽을 -Y 방향으로 맞춤 (XY 평면 기준)
+    ctr.set_front([0, 0, 1])   # 카메라가 -Z 방향(아래)으로 바라보도록 설정
+    ctr.set_up([0, 1, 0])      # 화면의 위쪽을 -Y 방향으로 맞춤 (XY 평면 기준)
     ctr.set_lookat([0, 0, 0])   # 원점(센서 위치)을 바라보도록 설정
     
     # 직교 투영(Orthographic Projection) 활성화
@@ -1116,7 +1116,7 @@ def main() -> None:
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-0655',
+        default='scene-0061',
         # default=None,
         help="Scene name to visualize boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
                                                 "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
