@@ -10,14 +10,16 @@ docker run --gpus all -it --shm-size=16g \
     -v "/usr/share/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d/" \
     -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
+    -e EGL_PLATFORM=surfaceless \
+    --device=/dev/nvidia0 \
     --name drivestudio \
     drivestudio:0.0.1 /bin/bash
 
 ## (Every Time) Activate Conda Environment
 conda activate drivestudio
 
-## for animation font
-apt-get install -y fonts-dejavu-core
+## Install packages for animation (to be integrated in dockerfile)
+apt-get update && apt-get install -y fonts-dejavu-core libegl1 libgl1 libgles2 libglvnd0
 
 # 3. Run OmniRe training
 ## Set Configuration
