@@ -1204,7 +1204,7 @@ def create_gif_animation_from_files(frame_files: List[str], output_dir: str, bas
             gif_path,
             save_all=True,
             append_images=images[1:],
-            duration=500,  # 0.5초당 프레임
+            duration=250,  # 0.25초당 프레임
             loop=0  # 무한 반복
         )
         
