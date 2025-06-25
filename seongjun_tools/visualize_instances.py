@@ -699,7 +699,7 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
                 
         except Exception as e:
             print(f"⚠️ 전체 렌더링 과정 실패: {e}")
-            print(f"   💡 대안: GUI 모드로 시각화하려면 --save_plot 옵션을 제거하세요.")
+            print(f"   💡 대안: GUI 모드로 시각화하려면 --save_dir 옵션을 제거하세요.")
         return
 
     # 2) 일반 윈도우 모드 (GUI 가능 환경)
@@ -707,7 +707,7 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
         o3d.visualization.draw_geometries(geometries, window_name=window_name)  # type: ignore
     except Exception as e:
         print("⚠️ Open3D GUI 창 생성에 실패했습니다. (Headless 환경으로 판단)\n   → 오류 메시지:", e)
-        print("대신 오프스크린 모드로 이미지를 저장합니다. '--save_plot <경로>' 인자를 지정하세요.")
+        print("대신 오프스크린 모드로 이미지를 저장합니다. '--save_dir <경로>' 인자를 지정하세요.")
 
 
 def visualize_all_samples_individually(gaussian_boxes: Optional[EvalBoxes] = None, 
@@ -1107,7 +1107,7 @@ def main() -> None:
         help="Verbose",
     )
     parser.add_argument(
-        "--save_plot",
+        "--save_dir",
         type=str,
         # default=None,
         default='/workspace/drivestudio/output/feasibility_check/updated/plots',
@@ -1236,7 +1236,7 @@ def main() -> None:
             gt_boxes=gt_boxes,
             scene_name=args.scene_name,
             score_threshold=args.score_threshold,
-            save_dir=args.save_plot,
+            save_dir=args.save_dir,
             max_boxes=args.max_boxes,
             max_samples=args.max_samples,
             show_lidar=args.show_lidar,
@@ -1252,7 +1252,7 @@ def main() -> None:
             gt_boxes=gt_boxes, 
             scene_name=args.scene_name, 
             score_threshold=args.score_threshold, 
-            save_path=args.save_plot, 
+            save_path=args.save_dir, 
             max_boxes=args.max_boxes,
             sample_token=args.sample_token,
             show_lidar=args.show_lidar,
