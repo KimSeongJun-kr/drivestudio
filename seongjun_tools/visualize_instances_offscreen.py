@@ -824,7 +824,7 @@ def render_and_save_offscreen(geometries, save_path, w=3840, h=2160, view_width_
         print(f"Creating offscreen renderer... ({w}x{h})")
         renderer = rendering.OffscreenRenderer(w, h)
         scene = renderer.scene
-        scene.set_background([1, 1, 1, 1])  # White background
+        scene.set_background([1.0, 1.0, 1.0, 2.0])  # White background
 
         print("Setting up materials...")
         mat = rendering.MaterialRecord()
