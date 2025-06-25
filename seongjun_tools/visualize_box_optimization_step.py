@@ -192,10 +192,15 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         bool: 성공 여부
     """
     try:
-        print(f"오프스크린 렌더러 생성 중... ({w}x{h})")
-        renderer = rendering.OffscreenRenderer(w, h)
-        scene = renderer.scene
-        scene.set_background([1.0, 1.0, 1.0, 2.0])  # 흰색 배경
+        # 싱글톤 렌더러 가져오기 (VRAM 누수 방지)
+        renderer = _get_offscreen_renderer(w, h)
+        print(f"오프스크린 렌더러 사용 중... ({w}x{h})")
+
+        # 흰색 배경 적용 (재사용 시 매 프레임 설정 필요)
+        try:
+            renderer.scene.set_background([1.0, 1.0, 1.0, 2.0])  # RGBA
+        except Exception:
+            pass
 
         print("재질 설정 중...")
         mat = rendering.MaterialRecord()
@@ -207,7 +212,7 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         valid_objects = 0
         for i, g in enumerate(geometries):
             try:
-                scene.add_geometry(f"g{i}", g, mat)
+                renderer.scene.add_geometry(f"g{i}", g, mat)
                 valid_objects += 1
             except Exception as e:
                 print(f"객체 {i} 추가 실패: {e}")
@@ -238,7 +243,7 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
             
             # 카메라 설정 적용
             try:
-                scene.camera.look_at(center.tolist(),           # 바라볼 지점
+                renderer.scene.camera.look_at(center.tolist(),           # 바라볼 지점
                                 camera_pos.tolist(),        # 카메라 위치
                                 [0, 1, 0])                 # up 벡터
                 print("✅ 카메라 설정 성공")
@@ -283,7 +288,7 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
                     near, far = 0.1, float(extent[2] + 100.0)
 
                     # Open3D API를 사용한 직교 투영 (enum + frustum)
-                    scene.camera.set_projection(
+                    renderer.scene.camera.set_projection(
                         O3DCamera.Projection.Ortho,
                         left,
                         right,
@@ -333,12 +338,47 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         traceback.print_exc()
         return False
     finally:
-        # 리소스 정리
+        # 다음 프레임을 위해 지오메트리만 정리 (렌더러는 재사용)
         try:
             if 'renderer' in locals():
-                del renderer
-        except:
+                renderer.scene.clear_geometry()
+        except Exception:
             pass
+
+# ---------------------------------------------------------------------------
+# OffscreenRenderer 싱글톤 관리 (반복 생성으로 인한 VRAM 누수 방지)
+# ---------------------------------------------------------------------------
+
+_GLOBAL_RENDERER: Optional[rendering.OffscreenRenderer] = None  # 재사용할 렌더러
+_GLOBAL_RENDERER_SIZE: Optional[Tuple[int, int]] = None  # (w, h)
+
+
+def _get_offscreen_renderer(w: int, h: int) -> rendering.OffscreenRenderer:
+    """필요 시 새로운 OffscreenRenderer 를 생성하고, 그렇지 않으면 기존 인스턴스를 재사용합니다.
+
+    Open3D <0.18 버전에서는 OffscreenRenderer 를 반복 생성할 때 GPU 메모리가
+    해제되지 않는 이슈가 있어, 싱글톤으로 관리하여 누수를 방지합니다.
+    """
+    global _GLOBAL_RENDERER, _GLOBAL_RENDERER_SIZE
+
+    if _GLOBAL_RENDERER is None or _GLOBAL_RENDERER_SIZE != (w, h):
+        # 기존 렌더러를 해제하고 새 인스턴스를 생성
+        try:
+            if _GLOBAL_RENDERER is not None:
+                _GLOBAL_RENDERER.release_resources()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        _GLOBAL_RENDERER = rendering.OffscreenRenderer(w, h)
+        _GLOBAL_RENDERER_SIZE = (w, h)
+
+    # 매 프레임마다 지오메트리 초기화
+    try:
+        _GLOBAL_RENDERER.scene.clear_geometry()
+    except Exception:
+        pass
+
+    return _GLOBAL_RENDERER
 
 # ===========================
 # 좌표 변환 유틸리티
@@ -1204,8 +1244,8 @@ def create_gif_animation_from_files(frame_files: List[str], output_dir: str, bas
             gif_path,
             save_all=True,
             append_images=images[1:],
-            duration=250,  # 0.25초당 프레임
-            loop=0  # 무한 반복
+            duration=125,
+            loop=0
         )
         
         print(f"✅ GIF 애니메이션 생성 완료: {gif_path}")
@@ -1223,7 +1263,7 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="/workspace/drivestudio/output/feasibility_check/updated/run_update_scene_0_date_0529_try_1",
+        default="/workspace/drivestudio/output/feasibility_check_0619/run_updated_scene_0_date_0529_try_1",
         help="Directory containing checkpoint files (checkpoint_*.pth)"
     )
     parser.add_argument(
