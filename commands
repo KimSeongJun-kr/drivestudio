@@ -5,7 +5,9 @@ docker build -t drivestudio:0.0.1 .
 ## Run Docker Container
 xhost +local:root
 docker run --gpus all -it --shm-size=16g \
-    -v "/media/aimlab/HDD00/users/seongjun/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
+    -v "/home/aimlab/seongjun_ws/docker_ws/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
+    -v "/media/aimlab/HDD02_1TB:/workspace/drivestudio/data" \
+    -v "/usr/share/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d/" \
     -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
     -e NVIDIA_DRIVER_CAPABILITIES=all \
     --name drivestudio \
@@ -63,7 +65,7 @@ python seongjun_tools/visualize_instances.py \
     --gt_boxes /workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src_selected_tar.json \
     --version v1.0-mini \
     --dataroot /workspace/drivestudio/data/nuscenes/raw \
-    --save_plot /workspace/drivestudio/output/feasibility_check/updated/plots
+    --save_dir /workspace/drivestudio/output/feasibility_check/updated/plots
 
 
 

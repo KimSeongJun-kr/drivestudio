@@ -1,96 +1,32 @@
 import argparse
-import numpy as np
-import tqdm
-from typing import Callable, Tuple, List, Dict, Optional
-from collections import defaultdict, OrderedDict
-from dataclasses import dataclass, asdict
 import json
 import os
-from pathlib import Path
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from typing import Tuple, List, Dict, Optional
+from collections import defaultdict
+
+import numpy as np
+import tqdm
 from pyquaternion import Quaternion
 import open3d as o3d
-import open3d.visualization
-import ctypes
+from open3d.visualization import rendering
+from open3d.visualization.rendering import Camera as O3DCamera  # type: ignore
 
 from nuscenes import NuScenes
-from nuscenes.eval.detection.evaluate import NuScenesEval
 from nuscenes.eval.detection.config import config_factory
-from nuscenes.eval.detection.data_classes import DetectionMetricData, DetectionBox, DetectionMetricDataList, DetectionMetrics
+from nuscenes.eval.detection.data_classes import DetectionBox
 from nuscenes.eval.detection.utils import category_to_detection_name
-from nuscenes.eval.detection.algo import calc_ap, calc_tp
-from nuscenes.eval.detection.constants import TP_METRICS
 from nuscenes.eval.tracking.data_classes import TrackingBox
 from nuscenes.eval.common.data_classes import EvalBoxes
-from nuscenes.eval.common.loaders import load_prediction, add_center_dist, filter_eval_boxes
-from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
+from nuscenes.eval.common.loaders import load_prediction
 from nuscenes.utils.splits import create_splits_scenes
 from nuscenes.utils.data_classes import LidarPointCloud
-import abc
-from typing import Union
 
-class EvalBox(abc.ABC):
-    """ Abstract base class for data classes used during detection evaluation. Can be a prediction or ground truth."""
-
-    def __init__(self,
-                 sample_token: str = "",
-                 translation: Tuple[float, float, float] = (0, 0, 0),
-                 size: Tuple[float, float, float] = (0, 0, 0),
-                 rotation: Tuple[float, float, float, float] = (0, 0, 0, 0),
-                 velocity: Tuple[float, float] = (0, 0),
-                 ego_translation: Tuple[float, float, float] = (0, 0, 0),  # Translation to ego vehicle in meters.
-                 ego_rotation: Tuple[float, float, float, float] = (0, 0, 0, 0),
-                 num_pts: int = -1):  # Nbr. LIDAR or RADAR inside the box. Only for gt boxes.
-
-        # Assert data for shape and NaNs.
-        assert type(sample_token) == str, 'Error: sample_token must be a string!'
-
-        assert len(translation) == 3, 'Error: Translation must have 3 elements!'
-        assert not np.any(np.isnan(translation)), 'Error: Translation may not be NaN!'
-
-        assert len(size) == 3, 'Error: Size must have 3 elements!'
-        assert not np.any(np.isnan(size)), 'Error: Size may not be NaN!'
-
-        assert len(rotation) == 4, 'Error: Rotation must have 4 elements!'
-        assert not np.any(np.isnan(rotation)), 'Error: Rotation may not be NaN!'
-
-        # Velocity can be NaN from our database for certain annotations.
-        assert len(velocity) == 2, 'Error: Velocity must have 2 elements!'
-
-        assert len(ego_translation) == 3, 'Error: Translation must have 3 elements!'
-        assert not np.any(np.isnan(ego_translation)), 'Error: Translation may not be NaN!'
-
-        assert type(num_pts) == int, 'Error: num_pts must be int!'
-        assert not np.any(np.isnan(num_pts)), 'Error: num_pts may not be NaN!'
-
-        # Assign.
-        self.sample_token = sample_token
-        self.translation = translation
-        self.size = size
-        self.rotation = rotation
-        self.velocity = velocity
-        self.ego_translation = ego_translation
-        self.ego_rotation = ego_rotation
-        self.num_pts = num_pts
-
-    @property
-    def ego_dist(self) -> float:
-        """ Compute the distance from this box to the ego vehicle in 2D. """
-        return np.sqrt(np.sum(np.array(self.ego_translation[:2]) ** 2))
-
-    def __repr__(self):
-        return str(self.serialize())
-
-    @abc.abstractmethod
-    def serialize(self) -> dict:
-        pass
-
-    @classmethod
-    @abc.abstractmethod
-    def deserialize(cls, content: dict):
-        pass
+# Constants for Open3D box edges (12 edges for a 3D box)
+OPEN3D_BOX_LINES = [
+    [0, 1], [1, 2], [2, 3], [3, 0],  # Bottom face
+    [4, 5], [5, 6], [6, 7], [7, 4],  # Top face
+    [0, 4], [1, 5], [2, 6], [3, 7]   # Vertical edges
+]
 
 
 def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> Tuple[EvalBoxes, Dict[str, List]]:
@@ -256,9 +192,9 @@ def add_ego_pose(nusc: NuScenes,
             ego_rotation = ego_rotation_global.inverse * box_rotation_global
             
             if isinstance(box, DetectionBox) or isinstance(box, TrackingBox):
-                box.ego_translation = tuple(ego_translation_array)
+                box.ego_translation = (float(ego_translation_array[0]), float(ego_translation_array[1]), float(ego_translation_array[2]))
                 # Add ego_rotation attribute dynamically
-                setattr(box, 'ego_rotation', tuple([ego_rotation.w, ego_rotation.x, ego_rotation.y, ego_rotation.z]))  # type: ignore
+                setattr(box, 'ego_rotation', (ego_rotation.w, ego_rotation.x, ego_rotation.y, ego_rotation.z))
             else:
                 raise NotImplementedError
 
@@ -300,148 +236,115 @@ def get_box_corners(translation, size, rotation):
     
     return corners_world
 
-def draw_3d_box(ax, corners, color='blue', alpha=0.3, edge_color='black'):
-    """3D 박스를 그립니다.
-    
-    Args:
-        ax: matplotlib 3D axis
-        corners: 8x3 numpy array, 박스의 8개 꼭짓점
-        color: 박스 면의 색상
-        alpha: 투명도
-        edge_color: 테두리 색상
-    """
-    # 12개의 면을 정의 (각 면은 4개의 꼭짓점으로 구성)
-    faces = [
-        [corners[0], corners[1], corners[2], corners[3]],  # 아래면
-        [corners[4], corners[5], corners[6], corners[7]],  # 위면
-        [corners[0], corners[1], corners[5], corners[4]],  # 앞면
-        [corners[2], corners[3], corners[7], corners[6]],  # 뒷면
-        [corners[1], corners[2], corners[6], corners[5]],  # 오른쪽면
-        [corners[4], corners[7], corners[3], corners[0]]   # 왼쪽면
-    ]
-    
-    # Poly3DCollection을 사용해서 면들을 그리기
-    poly3d = [[tuple(face[j]) for j in range(len(face))] for face in faces]
-    ax.add_collection3d(Poly3DCollection(poly3d, 
-                                        facecolors=color, 
-                                        linewidths=1, 
-                                        edgecolors=edge_color,
-                                        alpha=alpha))
+
 
 # ===========================
-# Open3D 시각화 유틸리티
+# Open3D Visualization Utilities
 # ===========================
-
-# Open3D LineSet 생성을 위한 에지 인덱스 (12개)
-OPEN3D_BOX_LINES = [
-    [0, 1], [1, 2], [2, 3], [3, 0],  # 아래면
-    [4, 5], [5, 6], [6, 7], [7, 4],  # 위면
-    [0, 4], [1, 5], [2, 6], [3, 7]   # 옆면
-]
 
 # -----------------------------
 # NEW: Helper for front center sphere
 # -----------------------------
 
 def create_open3d_sphere(center: np.ndarray, radius: float, color: Tuple[float, float, float]) -> o3d.geometry.TriangleMesh:
-    """지정한 중심과 색상의 구(Sphere) Mesh를 생성합니다.
+    """Create a sphere mesh with specified center and color.
 
     Args:
-        center (np.ndarray): 중심 좌표 (3,)
-        radius (float): 구의 반지름
-        color (Tuple[float, float, float]): RGB 컬러 (0~1)
+        center (np.ndarray): Center coordinates (3,)
+        radius (float): Sphere radius
+        color (Tuple[float, float, float]): RGB color (0~1)
 
     Returns:
-        o3d.geometry.TriangleMesh: 시각화용 Sphere Mesh
+        o3d.geometry.TriangleMesh: Sphere mesh for visualization
     """
     sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
     sphere.translate(center)
     sphere.paint_uniform_color(color)
+    # No need to compute normals for unlit shader
     return sphere
 
 def create_open3d_box(corners: np.ndarray, color: Tuple[float, float, float]) -> o3d.geometry.TriangleMesh:
-    """8개 꼭짓점 정보로부터 Open3D 두꺼운 선으로 이루어진 육면체 객체를 생성합니다.
+    """Create a 3D box from 8 corner points using thick lines (cylinders).
 
     Args:
-        corners (np.ndarray): (8, 3) 형태의 꼭짓점 좌표
-        color (Tuple[float, float, float]): RGB 컬러 (0~1)
+        corners (np.ndarray): (8, 3) corner coordinates
+        color (Tuple[float, float, float]): RGB color (0~1)
 
     Returns:
-        o3d.geometry.TriangleMesh: 시각화용 두꺼운 선 박스
+        o3d.geometry.TriangleMesh: Box mesh with thick edges for visualization
     """
-    # 선 두께 설정
-    line_radius = 0.05  # 선의 반지름 (두께 조절)
+    # Line thickness setting
+    line_radius = 0.05
     
-    # 모든 실린더를 합칠 메쉬
+    # Mesh to combine all cylinders
     combined_mesh = o3d.geometry.TriangleMesh()
     
-    # 12개의 모서리에 대해 실린더 생성
+    # Create cylinders for 12 edges
     for line_indices in OPEN3D_BOX_LINES:
         start_point = corners[line_indices[0]]
         end_point = corners[line_indices[1]]
         
-        # 두 점 사이의 거리 계산
+        # Calculate distance between points
         line_vector = end_point - start_point
         line_length = np.linalg.norm(line_vector)
         
-        if line_length < 1e-6:  # 너무 짧은 선은 건너뛰기
+        if line_length < 1e-6:  # Skip very short lines
             continue
             
-        # 실린더 생성 (Z축 방향으로 생성됨)
+        # Create cylinder (initially oriented along Z axis)
         cylinder = o3d.geometry.TriangleMesh.create_cylinder(
             radius=line_radius, 
             height=line_length,
-            resolution=8  # 실린더의 해상도 (낮으면 성능 향상)
+            resolution=8  # Lower resolution for better performance
         )
         
-        # 실린더를 올바른 방향으로 회전시키기
-        # Z축 단위벡터
+        # Rotate cylinder to correct orientation
         z_axis = np.array([0, 0, 1])
-        # 선의 방향 벡터
         line_direction = line_vector / line_length
         
-        # 회전축 계산 (외적)
+        # Calculate rotation axis (cross product)
         rotation_axis = np.cross(z_axis, line_direction)
         rotation_axis_norm = np.linalg.norm(rotation_axis)
         
-        if rotation_axis_norm > 1e-6:  # 평행하지 않은 경우
-            # 회전각 계산
+        if rotation_axis_norm > 1e-6:  # Not parallel
+            # Calculate rotation angle
             cos_angle = np.dot(z_axis, line_direction)
             angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
             
-            # 회전축 정규화
+            # Normalize rotation axis
             rotation_axis = rotation_axis / rotation_axis_norm
             
-            # 회전 행렬 생성
+            # Create rotation matrix
             rotation_matrix = o3d.geometry.get_rotation_matrix_from_axis_angle(
                 rotation_axis * angle
             )
             
-            # 실린더 회전
+            # Apply rotation
             cylinder.rotate(rotation_matrix, center=(0, 0, 0))
         
-        # 실린더를 시작점으로 이동 (실린더 중심이 선의 중점이 되도록)
+        # Translate cylinder to correct position
         cylinder_center = (start_point + end_point) / 2
         cylinder.translate(cylinder_center)
         
-        # 색상 적용
+        # Apply color
         cylinder.paint_uniform_color(color)
         
-        # 메쉬 합치기
+        # Combine meshes
         combined_mesh += cylinder
     
+    # No need to compute normals for unlit shader
     return combined_mesh
 
 
 def load_lidar_pointcloud(nusc: NuScenes, sample_token: str) -> Optional[np.ndarray]:
-    """NuScenes sample에서 LiDAR 포인트 클라우드를 로드하고 ego vehicle 좌표계로 변환합니다.
+    """Load LiDAR point cloud from NuScenes sample and transform to ego vehicle coordinates.
     
     Args:
-        nusc: NuScenes 객체
-        sample_token: sample token
+        nusc: NuScenes object
+        sample_token: Sample token
         
     Returns:
-        ego vehicle 좌표계의 포인트 클라우드 numpy array (N, 3) 또는 None
+        Point cloud in ego vehicle coordinates as numpy array (N, 3) or None
     """
     try:
         # sample 정보 가져오기
@@ -556,8 +459,10 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
 
     geometries = []
 
-    # Coordinate frame 추가
-    geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0))
+    # Coordinate frame 추가 (크기 증가)
+    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0)
+    # 좌표계는 이미 법선 벡터가 있음
+    geometries.append(coord_frame)
 
     gaussian_count, pred_count, gt_count = 0, 0, 0
     center_translation = None
@@ -612,7 +517,7 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
             print(f"✅ {len(lidar_points):,}개의 LiDAR 포인트를 로드했습니다.")  
             # Open3D PointCloud 생성 및 추가
             lidar_pcd = create_open3d_pointcloud(lidar_points, 
-                                               color=(0.5, 0.5, 0.5),  # 회색
+                                               color=(0.25, 0.25, 0.25),  # 회색
                                                max_points=max_lidar_points)
             geometries.append(lidar_pcd)
         else:
@@ -659,10 +564,8 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
         window_name += " (" + " | ".join(subtitle_parts) + ")"
 
     # ---------------------------
-    # 시각화 (온스크린 or 오프스크린)
+    # 시각화 (오프스크린)
     # ---------------------------
-
-    # 1) 오프스크린 렌더링 모드가 필요한 경우 (save_path 지정 or GUI 사용 불가)
     if save_path is not None:
         try:
             # 저장 경로 디렉토리 생성
@@ -671,19 +574,10 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
                 os.makedirs(save_dir_path, exist_ok=True)
                 print(f"📁 디렉토리 생성: {save_dir_path}")
             
-            print(f"🎨 오프스크린 렌더링 시작... ({len(geometries)}개 객체)")
-            
-            vis = o3d.visualization.Visualizer()  # type: ignore
-            # vis.create_window(visible=False, width=1920, height=1080)
-            vis.create_window(visible=False, width=3840, height=2160)
-            
-            # 시각화 윈도우 설정
-            _setup_visualization_window(vis, geometries)
+            print(f"🎨 오프스크린 렌더링 시작... ({len(geometries)}개 객체)")           
             
             # 이미지 렌더링 및 저장
-            success = _render_and_save_image(vis, save_path)
-            
-            vis.destroy_window()
+            success = render_and_save_offscreen(geometries, save_path, view_width_m=100)
             
             # 결과 확인 및 피드백
             if success and os.path.exists(save_path):
@@ -696,18 +590,14 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
                     print(f"⚠️ 이미지 파일이 너무 작습니다: {file_size} bytes")
             else:
                 print(f"❌ 이미지 저장 실패: {save_path}")
-                
         except Exception as e:
             print(f"⚠️ 전체 렌더링 과정 실패: {e}")
             print(f"   💡 대안: GUI 모드로 시각화하려면 --save_dir 옵션을 제거하세요.")
         return
 
     # 2) 일반 윈도우 모드 (GUI 가능 환경)
-    try:
-        o3d.visualization.draw_geometries(geometries, window_name=window_name)  # type: ignore
-    except Exception as e:
-        print("⚠️ Open3D GUI 창 생성에 실패했습니다. (Headless 환경으로 판단)\n   → 오류 메시지:", e)
-        print("대신 오프스크린 모드로 이미지를 저장합니다. '--save_dir <경로>' 인자를 지정하세요.")
+    print("⚠️ Headless 환경에서는 GUI 모드를 사용할 수 없습니다.")
+    print("💡 이미지를 저장하려면 '--save_dir <경로>' 옵션을 사용하세요.")
 
 
 def visualize_all_samples_individually(gaussian_boxes: Optional[EvalBoxes] = None, 
@@ -788,8 +678,8 @@ def visualize_all_samples_individually(gaussian_boxes: Optional[EvalBoxes] = Non
         )
         
         if not save_dir:
-            # GUI 모드일 때는 사용자 입력 대기
-            input("다음 sample로 이동하려면 Enter를 누르세요... (Ctrl+C로 종료)")
+            print("⚠️ --save_dir 옵션이 지정되지 않았습니다. Headless 환경에서는 이미지 저장이 필요합니다.")
+            break
 
 # -----------------------------------------------------------------------------
 # 박스 필터링 유틸리티 (Score / Scene)
@@ -916,72 +806,179 @@ def _get_available_sample_tokens(gaussian_boxes: Optional[EvalBoxes],
             available_sample_tokens.update(boxes.sample_tokens)
     return available_sample_tokens
 
-
-def _setup_visualization_window(vis: o3d.visualization.Visualizer, 
-                               geometries: List,
-                               background_color: Tuple[float, float, float] = (1, 1, 1)) -> None:
-    """시각화 윈도우의 렌더링 옵션과 카메라를 설정합니다.
+def render_and_save_offscreen(geometries, save_path, w=3840, h=2160, view_width_m: Optional[float] = None, view_height_m: Optional[float] = None):
+    """Perform offscreen rendering and save image.
     
     Args:
-        vis: Open3D Visualizer 객체
-        geometries: 시각화할 기하학적 객체들
-        background_color: 배경색 (기본: 흰색)
-    """
-    # 렌더링 옵션 설정
-    render_option = vis.get_render_option()
-    render_option.background_color = np.array(background_color)
-    render_option.point_size = 6.0
-    
-    # 기하학적 객체들 추가
-    for g in geometries:
-        vis.add_geometry(g)
-    
-    # 카메라 시점: Top-Down(조감) 뷰로 변경
-    ctr = vis.get_view_control()
-    ctr.set_front([0, 0, 1])   # 카메라가 -Z 방향(아래)으로 바라보도록 설정
-    ctr.set_up([0, 1, 0])      # 화면의 위쪽을 -Y 방향으로 맞춤 (XY 평면 기준)
-    ctr.set_lookat([0, 0, 0])   # 원점(센서 위치)을 바라보도록 설정
-    
-    # 직교 투영(Orthographic Projection) 활성화
-    ctr.change_field_of_view(step=-500)  # FOV를 매우 작게 설정하여 직교 투영 효과
-    ctr.set_zoom(0.15)  # 적절한 줌 레벨 설정
-
-
-def _render_and_save_image(vis: o3d.visualization.Visualizer, save_path: str) -> bool:
-    """이미지를 렌더링하고 저장합니다.
-    
-    Args:
-        vis: Open3D Visualizer 객체
-        save_path: 저장할 파일 경로
+        geometries: Geometric objects to render
+        save_path: File path to save
+        w: Image width
+        h: Image height
+        view_width_m: Custom view width in meters
+        view_height_m: Custom view height in meters
         
     Returns:
-        저장 성공 여부
+        bool: Success status
     """
-    # 여러 번 렌더링하여 안정화
-    for _ in range(3):
-        vis.poll_events()
-        vis.update_renderer()
-    
-    # Float buffer로 이미지 캡처 (더 안정적)
     try:
-        image = vis.capture_screen_float_buffer(do_render=True)
-        image_np = np.asarray(image)
-        
-        # Float buffer를 0-255 범위로 변환
-        if image_np.max() <= 1.0:
-            image_np = (image_np * 255).astype(np.uint8)
-        
-        # PIL로 이미지 저장
-        from PIL import Image
-        pil_image = Image.fromarray(image_np)
-        pil_image.save(save_path)
-        return True
-        
-    except Exception as e:
-        print(f"⚠️ Float buffer 방법 실패: {e}")
-        # 최후의 수단: 기본 capture_screen_image
-        return vis.capture_screen_image(save_path)
+        print(f"Creating offscreen renderer... ({w}x{h})")
+        renderer = rendering.OffscreenRenderer(w, h)
+        scene = renderer.scene
+        scene.set_background([1.0, 1.0, 1.0, 2.0])  # White background
 
+        print("Setting up materials...")
+        mat = rendering.MaterialRecord()
+        mat.shader = "defaultUnlit"
+        mat.base_color = [1.0, 1.0, 1.0, 1.0]
+        mat.point_size = 5.0
+
+        print(f"Adding {len(geometries)} objects to scene...")
+        valid_objects = 0
+        for i, g in enumerate(geometries):
+            try:
+                scene.add_geometry(f"g{i}", g, mat)
+                valid_objects += 1
+            except Exception as e:
+                print(f"Failed to add object {i}: {e}")
+                continue
+
+        print(f"Successfully added {valid_objects}/{len(geometries)} objects.")
+        
+        if valid_objects == 0:
+            print("No objects added. Stopping rendering.")
+            return False
+
+        print("Setting up camera...")
+        
+        # 먼저 모든 객체들의 바운딩 박스를 계산
+        all_points = []
+        for geom in geometries:
+            if hasattr(geom, 'get_axis_aligned_bounding_box'):
+                bbox = geom.get_axis_aligned_bounding_box()
+                points = np.asarray(bbox.get_box_points())
+                all_points.extend(points)
+         
+        if all_points:
+            all_points = np.array(all_points)
+            center = np.array([0, 0, 0])
+            
+            # 카메라 위치 설정 (위에서 아래로 보는 시점)
+            camera_pos = center + [0, 0, 50.]
+            
+            # 카메라 설정 적용
+            try:
+                scene.camera.look_at(center.tolist(),           # 바라볼 지점
+                                camera_pos.tolist(),        # 카메라 위치
+                                [0, 1, 0])                 # up 벡터
+                print("✅ 카메라 설정 성공")
+
+                # -----------------------------
+                # NEW: force orthographic projection (top-down view)
+                # -----------------------------
+                try:
+                    # Calculate a square crop that fully contains the scene (slightly padded)
+                    min_bound = np.min(all_points, axis=0)
+                    max_bound = np.max(all_points, axis=0)
+                    extent = max_bound - min_bound  # [dx, dy, dz]
+
+                    # Renderer aspect ratio (width / height)
+                    aspect = float(w) / float(h)
+
+                    # ---- Custom view range support ----
+                    if (view_width_m is not None) or (view_height_m is not None):
+                        # At least one side specified
+                        if (view_width_m is not None) and (view_height_m is not None):
+                            half_width  = view_width_m * 0.5
+                            half_height = view_height_m * 0.5
+                        elif view_width_m is not None:
+                            half_width  = view_width_m * 0.5
+                            half_height = half_width / aspect
+                        else:  # only height specified
+                            half_height = view_height_m * 0.5  # type: ignore
+                            half_width  = half_height * aspect
+                    else:
+                        # Automatic range with padding
+                        pad = 1.1  # 10 % padding
+                        half_width_req  = extent[0] * 0.5 * pad + 0.5
+                        half_height_req = extent[1] * 0.5 * pad + 0.5
+
+                        if (half_width_req / half_height_req) >= aspect:
+                            half_width  = half_width_req
+                            half_height = half_width / aspect
+                        else:
+                            half_height = half_height_req
+                            half_width  = half_height * aspect
+
+                    left,  right = -half_width,  half_width
+                    bottom, top  = -half_height, half_height
+                    near, far = 0.1, float(extent[2] + 100.0)
+
+                    # Orthographic projection matrix (OpenGL style)               
+                    proj = np.array([
+                        [2.0 / (right - left), 0.0, 0.0, -(right + left) / (right - left)],
+                        [0.0, 2.0 / (top - bottom), 0.0, -(top + bottom) / (top - bottom)],
+                        [0.0, 0.0, -2.0 / (far - near), -(far + near) / (far - near)],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ], dtype=np.float32)
+
+                    # Apply orthographic projection using Open3D API (enum + frustum)
+                    scene.camera.set_projection(
+                        O3DCamera.Projection.Ortho,
+                        left,
+                        right,
+                        bottom,
+                        top,
+                        near,
+                        far,
+                    )
+                    print("✅ Orthographic projection enabled")
+                except Exception as e:
+                    # Fallback silently if current Open3D version does not support set_projection.
+                    print(f"⚠️ Unable to set orthographic projection: {e}")
+                # -----------------------------
+            except Exception as e:
+                print(f"⚠️ 카메라 설정 실패: {e}")
+        else:
+            print("⚠️ 객체 바운딩 박스를 계산할 수 없어 기본 카메라 설정 사용")
+
+        print("📸 이미지 렌더링 중...")
+        img = renderer.render_to_image()
+        
+        # 렌더링된 이미지 유효성 검사
+        if img is None:
+            print("❌ 렌더링된 이미지가 None입니다.")
+            return False
+            
+        img_array = np.asarray(img)
+        if img_array.size == 0:
+            print("❌ 렌더링된 이미지가 비어있습니다.")
+            return False
+            
+        print(f"📊 렌더링된 이미지 크기: {img_array.shape}")
+        
+        # 이미지 저장
+        print(f"💾 이미지 저장 중: {save_path}")
+        success = o3d.io.write_image(save_path, img)
+        
+        if success:
+            print(f"✅ 이미지 저장 성공!")
+            return True
+        else:
+            print(f"❌ o3d.io.write_image가 False를 반환했습니다.")
+            return False
+            
+    except Exception as e:
+        print(f"❌ 오프스크린 렌더링 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        # 리소스 정리
+        try:
+            if 'renderer' in locals():
+                del renderer
+        except:
+            pass
 
 def _add_boxes_to_geometries(boxes: Optional[EvalBoxes], 
                             sample_tokens_to_process: List[str],
@@ -1034,7 +1031,7 @@ def _add_boxes_to_geometries(boxes: Optional[EvalBoxes],
             corners = get_box_corners(relative_translation, box.size, rotation)
             geometries.append(create_open3d_box(corners, color))
             
-            # 앞면 중심점 시각화
+            # 앞면 중심점 시각화 (크기 증가)
             front_center = (corners[1] + corners[6]) / 2 
             geometries.append(create_open3d_sphere(front_center, radius=0.3, color=color))
             
@@ -1110,7 +1107,7 @@ def main() -> None:
         "--save_dir",
         type=str,
         # default=None,
-        default='/workspace/drivestudio/output/feasibility_check/updated/plots',
+        default='/workspace/drivestudio/output/test/plots',
         help="Path to save the 3D visualization plot"
     )
     parser.add_argument(
@@ -1119,8 +1116,7 @@ def main() -> None:
         default='scene-0061',
         # default=None,
         help="Scene name to visualize boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
-                                                "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
-                                                "'scene-1094', 'scene-1100')",
+             "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', 'scene-1094', 'scene-1100')",
     )
     parser.add_argument(
         "--score_threshold",
@@ -1167,9 +1163,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # 최소 하나의 박스 파일은 제공되어야 함
+    # At least one box file must be provided
     if not any([args.gaussian_boxes, args.pred_boxes, args.gt_boxes]):
-        print("⚠️ 최소 하나의 박스 파일을 제공해야 합니다 (--gaussian_boxes, --pred_boxes, --gt_boxes 중 하나)")
+        print("At least one box file must be provided (--gaussian_boxes, --pred_boxes, or --gt_boxes)")
         return
 
     nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=args.verbose)
@@ -1182,7 +1178,7 @@ def main() -> None:
 
     # Load gaussian boxes if provided
     if args.gaussian_boxes and os.path.exists(args.gaussian_boxes):
-        print(f"📊 Gaussian boxes 로딩 중: {args.gaussian_boxes}")
+        print(f"Loading Gaussian boxes: {args.gaussian_boxes}")
         gaussian_boxes, _ = load_prediction(args.gaussian_boxes, 
                                            config.max_boxes_per_sample, 
                                            DetectionBox,
@@ -1190,7 +1186,7 @@ def main() -> None:
 
     # Load prediction boxes if provided
     if args.pred_boxes and os.path.exists(args.pred_boxes):
-        print(f"📊 Prediction boxes 로딩 중: {args.pred_boxes}")
+        print(f"Loading prediction boxes: {args.pred_boxes}")
         pred_boxes, _ = load_prediction(args.pred_boxes, 
                                        config.max_boxes_per_sample, 
                                        DetectionBox,
@@ -1198,7 +1194,7 @@ def main() -> None:
 
     # Load ground truth boxes if provided
     if args.gt_boxes and os.path.exists(args.gt_boxes):
-        print(f"📊 Ground truth boxes 로딩 중: {args.gt_boxes}")
+        print(f"Loading ground truth boxes: {args.gt_boxes}")
         gt_boxes, _ = load_prediction(args.gt_boxes, 
                                      config.max_boxes_per_sample, 
                                      DetectionBox,
@@ -1206,7 +1202,7 @@ def main() -> None:
 
     # Filter by score threshold if prediction boxes exist
     if pred_boxes and args.score_threshold > 0:
-        print(f"📊 Score threshold {args.score_threshold}로 pred_boxes 필터링 중...")
+        print(f"Filtering pred_boxes with score threshold {args.score_threshold}...")
         pred_boxes = filter_boxes_by_score(pred_boxes, args.score_threshold)
     
     # Filter boxes by scene
@@ -1229,7 +1225,7 @@ def main() -> None:
     # Open3D 3D 시각화
     if args.visualize_individual_samples:
         # 모든 sample을 개별적으로 시각화
-        print("모든 sample을 개별적으로 시각화합니다...")
+        print("Visualizing all samples individually...")
         visualize_all_samples_individually(
             gaussian_boxes=gaussian_boxes,
             pred_boxes=pred_boxes, 
@@ -1244,8 +1240,8 @@ def main() -> None:
             max_lidar_points=args.max_lidar_points
         )
     else:
-        # 기존 방식: 모든 박스를 한번에 시각화 또는 특정 sample만 시각화
-        print("Open3D 3D 시각화를 생성하고 있습니다...")
+        # Default: visualize all boxes at once or specific sample
+        print("Creating Open3D 3D visualization...")
         visualize_ego_translations_open3d(
             gaussian_boxes=gaussian_boxes,
             pred_boxes=pred_boxes, 
