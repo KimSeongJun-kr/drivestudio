@@ -550,19 +550,6 @@ def visualize_ego_translations_open3d(gaussian_boxes: Optional[EvalBoxes] = None
         print("시각화할 박스가 없습니다.")
         return
 
-    # 윈도우 이름 설정
-    window_name = "Open3D Visualization of Detection Boxes"
-    subtitle_parts = []
-    if scene_name:
-        subtitle_parts.append(f"Scene: {scene_name}")
-    if sample_token:
-        subtitle_parts.append(f"Sample: {sample_token[:8]}...")
-    if score_threshold is not None and score_threshold > 0:
-        subtitle_parts.append(f"Score≥{score_threshold}")
-    subtitle_parts.append(f"Gaussian: {gaussian_count}, Pred: {pred_count}, GT: {gt_count}")
-    if subtitle_parts:
-        window_name += " (" + " | ".join(subtitle_parts) + ")"
-
     # ---------------------------
     # 시각화 (오프스크린)
     # ---------------------------
