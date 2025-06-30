@@ -193,7 +193,7 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
     """
     try:
         # 싱글톤 렌더러 가져오기 (VRAM 누수 방지)
-        renderer = rendering.OffscreenRenderer(w, h)
+        renderer = _get_offscreen_renderer(w, h)
 
         # 흰색 배경 적용 (재사용 시 매 프레임 설정 필요)
         try:
@@ -329,11 +329,43 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         # 다음 프레임을 위해 지오메트리만 정리 (렌더러는 재사용)
         try:
             if 'renderer' in locals():
-                # renderer.scene.clear_geometry()
-                renderer.release_resources()  # type: ignore[attr-defined]
+                renderer.scene.clear_geometry()
         except Exception:
             pass
 
+# ---------------------------------------------------------------------------
+# OffscreenRenderer 싱글톤 관리 (반복 생성으로 인한 VRAM 누수 방지)
+# ---------------------------------------------------------------------------
+
+_GLOBAL_RENDERER: Optional[rendering.OffscreenRenderer] = None  # 재사용할 렌더러
+_GLOBAL_RENDERER_SIZE: Optional[Tuple[int, int]] = None  # (w, h)
+
+def _get_offscreen_renderer(w: int, h: int) -> rendering.OffscreenRenderer:
+    """필요 시 새로운 OffscreenRenderer 를 생성하고, 그렇지 않으면 기존 인스턴스를 재사용합니다.
+
+    Open3D <0.18 버전에서는 OffscreenRenderer 를 반복 생성할 때 GPU 메모리가
+    해제되지 않는 이슈가 있어, 싱글톤으로 관리하여 누수를 방지합니다.
+    """
+    global _GLOBAL_RENDERER, _GLOBAL_RENDERER_SIZE
+
+    if _GLOBAL_RENDERER is None or _GLOBAL_RENDERER_SIZE != (w, h):
+        # 기존 렌더러를 해제하고 새 인스턴스를 생성
+        try:
+            if _GLOBAL_RENDERER is not None:
+                _GLOBAL_RENDERER.release_resources()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        _GLOBAL_RENDERER = rendering.OffscreenRenderer(w, h)
+        _GLOBAL_RENDERER_SIZE = (w, h)
+
+    # 매 프레임마다 지오메트리 초기화
+    try:
+        _GLOBAL_RENDERER.scene.clear_geometry()
+    except Exception:
+        pass
+
+    return _GLOBAL_RENDERER
 
 # ===========================
 # 좌표 변환 유틸리티
