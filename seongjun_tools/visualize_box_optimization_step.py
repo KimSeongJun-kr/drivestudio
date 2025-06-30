@@ -1,6 +1,6 @@
 import argparse
 import numpy as np
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict, Optional, Any
 import json
 import os
 from pathlib import Path
@@ -193,8 +193,7 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
     """
     try:
         # 싱글톤 렌더러 가져오기 (VRAM 누수 방지)
-        renderer = _get_offscreen_renderer(w, h)
-        print(f"오프스크린 렌더러 사용 중... ({w}x{h})")
+        renderer = rendering.OffscreenRenderer(w, h)
 
         # 흰색 배경 적용 (재사용 시 매 프레임 설정 필요)
         try:
@@ -202,29 +201,23 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         except Exception:
             pass
 
-        print("재질 설정 중...")
-        mat = rendering.MaterialRecord()
-        mat.shader = "defaultUnlit"
-        mat.base_color = [1.0, 1.0, 1.0, 1.0]
-        mat.point_size = 5.0
-
-        print(f"씬에 {len(geometries)}개 객체 추가 중...")
         valid_objects = 0
         for i, g in enumerate(geometries):
             try:
+                mat = rendering.MaterialRecord()
+                mat.shader = "defaultUnlit"
+                mat.base_color = [1.0, 1.0, 1.0, 1.0]
+                mat.point_size = 5.0
+
                 renderer.scene.add_geometry(f"g{i}", g, mat)
                 valid_objects += 1
             except Exception as e:
                 print(f"객체 {i} 추가 실패: {e}")
                 continue
-
-        print(f"성공적으로 {valid_objects}/{len(geometries)}개 객체 추가됨.")
         
         if valid_objects == 0:
             print("추가된 객체가 없습니다. 렌더링을 중단합니다.")
             return False
-
-        print("카메라 설정 중...")
         
         # 모든 객체들의 바운딩 박스를 계산
         all_points = []
@@ -233,6 +226,8 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
                 bbox = geom.get_axis_aligned_bounding_box()
                 points = np.asarray(bbox.get_box_points())
                 all_points.extend(points)
+            else:
+                print(f"❌ {geom} 객체에서 바운딩 박스 계산 실패")
          
         if all_points:
             all_points = np.array(all_points)
@@ -246,7 +241,6 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
                 renderer.scene.camera.look_at(center.tolist(),           # 바라볼 지점
                                 camera_pos.tolist(),        # 카메라 위치
                                 [0, 1, 0])                 # up 벡터
-                print("✅ 카메라 설정 성공")
 
                 # 직교 투영(orthographic projection) 강제 적용
                 try:
@@ -297,7 +291,6 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
                         near,
                         far,
                     )
-                    print("✅ 직교 투영 활성화됨")
                 except Exception as e:
                     # 현재 Open3D 버전에서 set_projection을 지원하지 않는 경우 조용히 폴백
                     print(f"⚠️ 직교 투영 설정 불가: {e}")
@@ -306,7 +299,6 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         else:
             print("⚠️ 객체 바운딩 박스를 계산할 수 없어 기본 카메라 설정 사용")
 
-        print("📸 이미지 렌더링 중...")
         img = renderer.render_to_image()
         
         # 렌더링된 이미지 유효성 검사
@@ -318,15 +310,11 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         if img_array.size == 0:
             print("❌ 렌더링된 이미지가 비어있습니다.")
             return False
-            
-        print(f"📊 렌더링된 이미지 크기: {img_array.shape}")
-        
+                  
         # 이미지 저장
-        print(f"💾 이미지 저장 중: {save_path}")
         success = o3d.io.write_image(save_path, img)
         
         if success:
-            print(f"✅ 이미지 저장 성공!")
             return True
         else:
             print(f"❌ o3d.io.write_image가 False를 반환했습니다.")
@@ -341,44 +329,11 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
         # 다음 프레임을 위해 지오메트리만 정리 (렌더러는 재사용)
         try:
             if 'renderer' in locals():
-                renderer.scene.clear_geometry()
+                # renderer.scene.clear_geometry()
+                renderer.release_resources()  # type: ignore[attr-defined]
         except Exception:
             pass
 
-# ---------------------------------------------------------------------------
-# OffscreenRenderer 싱글톤 관리 (반복 생성으로 인한 VRAM 누수 방지)
-# ---------------------------------------------------------------------------
-
-_GLOBAL_RENDERER: Optional[rendering.OffscreenRenderer] = None  # 재사용할 렌더러
-_GLOBAL_RENDERER_SIZE: Optional[Tuple[int, int]] = None  # (w, h)
-
-
-def _get_offscreen_renderer(w: int, h: int) -> rendering.OffscreenRenderer:
-    """필요 시 새로운 OffscreenRenderer 를 생성하고, 그렇지 않으면 기존 인스턴스를 재사용합니다.
-
-    Open3D <0.18 버전에서는 OffscreenRenderer 를 반복 생성할 때 GPU 메모리가
-    해제되지 않는 이슈가 있어, 싱글톤으로 관리하여 누수를 방지합니다.
-    """
-    global _GLOBAL_RENDERER, _GLOBAL_RENDERER_SIZE
-
-    if _GLOBAL_RENDERER is None or _GLOBAL_RENDERER_SIZE != (w, h):
-        # 기존 렌더러를 해제하고 새 인스턴스를 생성
-        try:
-            if _GLOBAL_RENDERER is not None:
-                _GLOBAL_RENDERER.release_resources()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-        _GLOBAL_RENDERER = rendering.OffscreenRenderer(w, h)
-        _GLOBAL_RENDERER_SIZE = (w, h)
-
-    # 매 프레임마다 지오메트리 초기화
-    try:
-        _GLOBAL_RENDERER.scene.clear_geometry()
-    except Exception:
-        pass
-
-    return _GLOBAL_RENDERER
 
 # ===========================
 # 좌표 변환 유틸리티
@@ -965,159 +920,129 @@ def create_all_sample_animations(checkpoint_dir: str, output_dir: str,
     if show_lidar:
         print(f"📡 LiDAR 포인트 클라우드 포함 (최대 {max_lidar_points:,}개 포인트)")
     
-    # 첫 번째 체크포인트에서 모든 프레임 정보 가져오기
-    first_checkpoint = checkpoint_files[0][1]
-    first_frame_boxes = extract_all_boxes_from_checkpoint(first_checkpoint)
-    
-    if not first_frame_boxes:
-        print(f"❌ 첫 번째 체크포인트에서 프레임 정보를 가져올 수 없습니다")
-        return
-    
-    # 모든 프레임 ID 가져오기
-    frame_ids = sorted(first_frame_boxes.keys())
-    
-    # sample_tokens 결정: scene_name 또는 sample_token 기반
-    scene_sample_tokens = []
-    if scene_name and nusc:
-        # scene_name이 지정된 경우: 시간순으로 sample_tokens 수집
-        print(f"🎬 Scene '{scene_name}'의 샘플들을 시간순으로 처리합니다")
-        scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
-        if not scene_sample_tokens:
-            print(f"❌ Scene '{scene_name}'을 찾을 수 없습니다")
-            return
-            
-        print(f"🎯 Scene '{scene_name}'에서 {len(scene_sample_tokens)}개 샘플 프레임 발견")
-    elif sample_token:
-        # 특정 sample_token이 지정된 경우
-        print(f"🎯 특정 샘플만 처리: {sample_token}")
-        scene_sample_tokens = [sample_token]
-    else:
-        # 둘 다 지정되지 않은 경우: 체크포인트 프레임 기반
-        print(f"🎯 체크포인트 상의 프레임 기반 처리: {len(frame_ids)}개 프레임")
-    
     # 샘플별 애니메이션 생성
-    if scene_sample_tokens:
-        # scene_name 또는 sample_token 기반: 각 샘플별로 애니메이션 생성
+    if scene_name or sample_token:
+        # ---------- 새로운 구현: 체크포인트를 한 번만 로드해 모든 샘플 처리 ----------
+
+        # 0) 처리할 sample token 목록 결정
+        scene_sample_tokens: List[str] = []
+        if scene_name and nusc is not None:
+            print(f"🎬 Scene '{scene_name}'의 샘플들을 시간순으로 처리합니다")
+            scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
+            if not scene_sample_tokens:
+                print(f"❌ Scene '{scene_name}'을 찾을 수 없거나 샘플이 없습니다")
+                return
+            print(f"🎯 Scene '{scene_name}'에서 {len(scene_sample_tokens)}개 샘플 프레임 발견")
+        elif sample_token:
+            scene_sample_tokens = [sample_token]
+            print(f"🎯 특정 샘플만 처리: {sample_token}")
+        else:
+            print("⚠️ scene_name과 sample_token이 모두 제공되지 않아 샘플을 결정할 수 없습니다")
+            return
+
+        # 1) 샘플 컨텍스트 초기화 (LiDAR, 출력 디렉토리 등)
+        sample_contexts: Dict[str, Dict[str, Any]] = {}
         for sample_idx, current_sample_token in enumerate(scene_sample_tokens):
-            print(f"\n🎬 샘플 {sample_idx+1}/{len(scene_sample_tokens)} 처리 중 (token: {current_sample_token})")
-            
-            # LiDAR 포인트 클라우드 로드 (샘플별로)
             lidar_points = None
             if show_lidar and nusc is not None:
-                print(f"📡 LiDAR 포인트 클라우드 로딩 중... (sample: {current_sample_token})")
                 lidar_points = load_lidar_pointcloud(nusc, current_sample_token)
-                if lidar_points is not None:
-                    print(f"✅ {len(lidar_points):,}개의 LiDAR 포인트를 로드했습니다.")
-                else:
-                    print("⚠️ LiDAR 포인트 클라우드를 로드할 수 없습니다.")
-            
-            # 샘플별 출력 디렉토리
+                if lidar_points is None:
+                    print(f"❌ LiDAR 포인트 로드 실패: {current_sample_token}")
+
             sample_output_dir = os.path.join(output_dir, f"sample_{sample_idx:02d}_{current_sample_token}")
             os.makedirs(sample_output_dir, exist_ok=True)
-            
-            frame_images = []
-            
-            # 각 체크포인트에 대해 해당 샘플의 시각화 생성
-            total_iterations = checkpoint_files[-1][0]
-            for i, (iteration, checkpoint_path) in enumerate(checkpoint_files):
-                print(f"  📸 Iteration {iteration:06d} ({i+1}/{len(checkpoint_files)} checkpoint_files)")
-                
-                # 프레임 이미지 저장 경로
-                frame_path = os.path.join(sample_output_dir, f"frame_{i:02d}_iter_{iteration:06d}.png")
-                
-                # 시각화용 geometries 생성
-                geometries = []
-                geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0))
-                
-                # LiDAR 포인트 클라우드 추가 (회색)
+
+            sample_contexts[current_sample_token] = {
+                'idx': sample_idx,
+                'lidar_points': lidar_points,
+                'output_dir': sample_output_dir,
+                'frame_images': []
+            }
+        print(f"\n🎬 샘플 {len(scene_sample_tokens)}개 초기화 완료")
+
+        # 2) camera_front_start (scene 기준) 한 번만 계산
+        camera_front_start = None
+        if nusc is not None and scene_name:
+            camera_front_start = get_camera_front_start_pose(nusc.dataroot, scene_name, nusc.version)
+            if camera_front_start is not None:
+                print("✅ Camera front start pose 로드 완료 (1회)")
+
+        # 3) 노드 타입별 색상 매핑 (고정)
+        color_mapping = {
+            'RigidNodes': (1.0, 0.0, 0.0),
+            'SMPLNodes': (1.0, 0.2, 0.0),
+            'DeformableNodes': (1.0, 0.25, 0.3),
+            'Unknown': (1.0, 0.2, 0.11)
+        }
+
+        total_iterations = checkpoint_files[-1][0]
+
+        # 4) 체크포인트를 순차적으로 처리하며 모든 샘플 이미지 저장
+        for cp_idx, (iteration, checkpoint_path) in enumerate(checkpoint_files):
+            print(f"\n🔄 Checkpoint {cp_idx+1}/{len(checkpoint_files)} 처리 중 - Iteration {iteration:06d}")       
+
+            all_frame_boxes = extract_all_boxes_from_checkpoint(checkpoint_path, camera_front_start)
+            if all_frame_boxes and nusc is not None and scene_sample_tokens:
+                all_frame_boxes = add_ego_pose_to_checkpoint_boxes(nusc, all_frame_boxes, scene_sample_tokens)
+
+            for idx, current_sample_token in enumerate(scene_sample_tokens):
+                print(f"{cp_idx+1} / {len(checkpoint_files)} 번째 체크포인트, {idx+1} / {len(scene_sample_tokens)} 번째 샘플 인덱스 처리중...")
+                ctx = sample_contexts[current_sample_token]
+                sample_idx = ctx['idx']
+                sample_output_dir = ctx['output_dir']
+                lidar_points = ctx['lidar_points']
+
+                frame_path = os.path.join(sample_output_dir, f"frame_{cp_idx:02d}_iter_{iteration:06d}.png")
+                if os.path.exists(frame_path):
+                    print(f"skip aready exist frame: {frame_path}")
+                    ctx['frame_images'].append(frame_path)
+                    continue
+
+                # --------- 시각화용 Geometry 생성 ---------
+                geometries = [o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0)]
+
                 if lidar_points is not None:
-                    lidar_pcd = create_open3d_pointcloud(lidar_points, 
-                                                       color=(0.25, 0.25, 0.25),  # 회색
-                                                       max_points=max_lidar_points)
+                    lidar_pcd = create_open3d_pointcloud(lidar_points, color=(0.25, 0.25, 0.25), max_points=max_lidar_points)
                     geometries.append(lidar_pcd)
-                
-                # camera 좌표계에서 world 좌표계로 변환을 위한 camera_front_start 가져오기
-                camera_front_start = None
-                if nusc is not None and scene_name:
-                    camera_front_start = get_camera_front_start_pose(
-                        nusc.dataroot, scene_name, nusc.version
-                    )
-                    if camera_front_start is not None:
-                        print(f"✅ Camera front start pose 로드 완료")
-                    else:
-                        print(f"⚠️ Camera front start pose 로드 실패")
-                
-                # 체크포인트에서 박스 정보 추출 및 추가 (camera→world 변환 포함)
-                all_frame_boxes = extract_all_boxes_from_checkpoint(checkpoint_path, camera_front_start)
+
                 if all_frame_boxes:
-                    # ego pose 변환 적용 (NuScenes 데이터가 있는 경우)
-                    if nusc is not None and scene_sample_tokens:
-                        all_frame_boxes = add_ego_pose_to_checkpoint_boxes(nusc, all_frame_boxes, scene_sample_tokens)
-                    
-                    # 노드 타입별 색상 매핑
-                    color_mapping = {
-                        'RigidNodes': (1.0, 0.0, 0.0),      # 빨간색 - 차량
-                        'SMPLNodes': (1.0, 0.2, 0.0),       # 주황색 - 사람
-                        'DeformableNodes': (1.0, 0.25, 0.3), # 분홍색 - 자전거 등
-                        'Unknown': (1.0, 0.2, 0.11)         # 코랄색 - 기타
-                    }
-                    
-                    # 체크포인트의 프레임들 중에서 해당 샘플에 대응하는 것 찾기
                     checkpoint_frame_id = sample_idx * 5  # 5의 배수로 매핑
-                    
-                    # 체크포인트 박스들을 geometries에 추가 (ego 좌표계 사용)
                     checkpoint_geometries = _add_checkpoint_boxes_to_geometries(
-                        all_frame_boxes, 
-                        checkpoint_frame_id, 
-                        color_mapping, 
+                        all_frame_boxes,
+                        checkpoint_frame_id,
+                        color_mapping,
                         use_ego_coordinates=True
                     )
                     geometries.extend(checkpoint_geometries)
-                
-                # pred_boxes 추가 (파란색)
+
+                # pred / gt boxes
                 if pred_boxes and current_sample_token in pred_boxes.sample_tokens:
-                    pred_geometries = _add_boxes_to_geometries(pred_boxes, current_sample_token, (0.0, 0.0, 1.0))
-                    geometries.extend(pred_geometries)
-                
-                # gt_boxes 추가 (검은색)
+                    geometries.extend(_add_boxes_to_geometries(pred_boxes, current_sample_token, (0.0, 0.0, 1.0)))
                 if gt_boxes and current_sample_token in gt_boxes.sample_tokens:
-                    gt_geometries = _add_boxes_to_geometries(gt_boxes, current_sample_token, (0.0, 0.0, 0.0))
-                    geometries.extend(gt_geometries)
-                
-                # 오프스크린 렌더링으로 이미지 저장
-                try:
-                    # 오프스크린 렌더링 호출
-                    success = render_and_save_offscreen(geometries, frame_path, w=1920, h=1080, view_width_m=100)
-                    
-                    if success and os.path.exists(frame_path) and os.path.getsize(frame_path) > 1000:
-                        # 이미지에 정보 텍스트 오버레이 추가
-                        text_success = add_text_overlay_to_image(
-                            frame_path, 
-                            scene_name if scene_name else "Unknown Scene", 
-                            sample_idx, 
-                            iteration, 
-                            total_iterations
-                        )
-                        if text_success:
-                            frame_images.append(frame_path)
-                        else:
-                            print(f"  ⚠️ 텍스트 오버레이 실패하지만 이미지는 유지: {frame_path}")
-                            frame_images.append(frame_path)  # 텍스트 실패해도 이미지는 보존
+                    geometries.extend(_add_boxes_to_geometries(gt_boxes, current_sample_token, (0.0, 0.0, 0.0)))
+
+                # 렌더링 및 저장
+                success = render_and_save_offscreen(geometries, frame_path, w=1920, h=1080, view_width_m=100)
+                if success and os.path.exists(frame_path) and os.path.getsize(frame_path) > 1000:
+                    if add_text_overlay_to_image(frame_path, scene_name if scene_name else "Unknown Scene", sample_idx, iteration, total_iterations):
+                        ctx['frame_images'].append(frame_path)
                     else:
-                        print(f"  ❌ 이미지 저장 실패: {frame_path}")
-                        
-                except Exception as e:
-                    print(f"  ⚠️ 렌더링 실패: {e}")
-                    continue
-            
-            # 프레임들을 GIF 애니메이션으로 결합
-            if frame_images:
-                animation_name = f"box_optimization_sample_{sample_idx:02d}_{current_sample_token}.gif"
-                create_gif_animation_from_files(frame_images, output_dir, animation_name)
-                print(f"  ✅ 샘플 {current_sample_token} 애니메이션 완료: {sample_output_dir}")
+                        ctx['frame_images'].append(frame_path)
+                else:
+                    print(f"  ❌ 이미지 저장 실패: {frame_path}")
+
+        # 5) GIF 생성 (체크포인트 처리 후)
+        for current_sample_token, ctx in sample_contexts.items():
+            if ctx['frame_images']:
+                animation_name = f"box_optimization_sample_{ctx['idx']:02d}_{current_sample_token}.gif"
+                create_gif_animation_from_files(ctx['frame_images'], output_dir, animation_name)
+                print(f"  ✅ 샘플 {current_sample_token} 애니메이션 완료: {ctx['output_dir']}")
             else:
                 print(f"  ❌ 샘플 {current_sample_token}에 대한 유효한 이미지가 없습니다")
-    
+
+        print(f"\n🎉 모든 애니메이션 생성 완료! 결과: {output_dir}")
+        return  # 기존 로직 실행 방지
+
     print(f"\n🎉 모든 애니메이션 생성 완료! 결과: {output_dir}")
 
 def add_text_overlay_to_image(image_path: str, scene_name: str, frame_idx: int, 
@@ -1263,13 +1188,13 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="/workspace/drivestudio/output/feasibility_check_0619/run_updated_scene_0_date_0529_try_1",
+        default="/workspace/drivestudio/output/feasibility_check_0627/run_updated_scene_1_date_0627_try_2",
         help="Directory containing checkpoint files (checkpoint_*.pth)"
     )
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-0061',
+        default='scene-0103',
         help="Scene name to animate boxes optimization (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
                                                 "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
                                                 "'scene-1094', 'scene-1100')",
