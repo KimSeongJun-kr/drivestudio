@@ -676,6 +676,8 @@ class ScenePixelSource(abc.ABC):
     image_error_buffered: bool = False
     # the downscale factor of the error buffer
     buffer_downscale: float = 1.0
+    # the camera front start
+    camera_front_start: np.ndarray = None
     
     # -------------- object annotations
     # (num_frame, num_instances, 4, 4)

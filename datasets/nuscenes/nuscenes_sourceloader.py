@@ -166,6 +166,9 @@ class NuScenesPixelSource(ScenePixelSource):
         self.start_timestep = start_timestep
         self.end_timestep = end_timestep
         self.load_data()
+        self.camera_front_start = np.loadtxt(
+            os.path.join(self.data_path, "extrinsics", f"{self.start_timestep:03d}_0.txt")
+        )
         
     def load_cameras(self):
         self._timesteps = torch.arange(self.start_timestep, self.end_timestep)
