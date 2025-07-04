@@ -413,13 +413,9 @@ def _extract_pose_annotations(
 
     results: Dict[str, List[Dict[str, Any]]] = {}
 
-    node_mappings = {
-        "RigidNodes": ("car", "vehicle.moving"),
-        "SMPLNodes": ("pedestrian", "pedestrian.moving"),
-        "DeformableNodes": ("bicycle", "cycle.with_rider"),
-    }
+    node_mappings = ["RigidNodes", "SMPLNodes", "DeformableNodes"]
 
-    for node_type, (detection_name, attribute_name) in node_mappings.items():
+    for node_type in node_mappings:
         if node_type not in trainer.models:
             continue
 
@@ -453,8 +449,7 @@ def _extract_pose_annotations(
                     "translation": t_world.tolist(),
                     "rotation": q_world.tolist(),
                     "size": inst_size,
-                    "detection_name": detection_name,
-                    "attribute_name": attribute_name,
+                    "detection_name": dataset.pixel_source.instances_detection_name[inst_id],
                     "instance_id": int(inst_id),
                     "node_type": node_type,
                     "confidence": 1.0,
