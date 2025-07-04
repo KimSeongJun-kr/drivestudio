@@ -166,6 +166,9 @@ class NuScenesPixelSource(ScenePixelSource):
         self.start_timestep = start_timestep
         self.end_timestep = end_timestep
         self.load_data()
+        self.camera_front_start = np.loadtxt(
+            os.path.join(self.data_path, "extrinsics", f"{self.start_timestep:03d}_0.txt")
+        )
         
     def load_cameras(self):
         self._timesteps = torch.arange(self.start_timestep, self.end_timestep)
@@ -231,13 +234,35 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_size = np.zeros((num_full_frames, num_instances, 3))
         instances_true_id = np.arange(num_instances)
         instances_model_types = np.ones(num_instances) * -1
-        
+        instances_detection_name = np.empty(num_instances, dtype=object)
+        detection_mapping = {
+            'movable_object.barrier': 'barrier',
+            'vehicle.bicycle': 'bicycle',
+            'vehicle.bus.bendy': 'bus',
+            'vehicle.bus.rigid': 'bus',
+            'vehicle.car': 'car',
+            'vehicle.construction': 'construction_vehicle',
+            'vehicle.motorcycle': 'motorcycle',
+            'human.pedestrian.adult': 'pedestrian',
+            'human.pedestrian.child': 'pedestrian',
+            'human.pedestrian.construction_worker': 'pedestrian',
+            'human.pedestrian.police_officer': 'pedestrian',
+            'movable_object.trafficcone': 'traffic_cone',
+            'vehicle.trailer': 'trailer',
+            'vehicle.truck': 'truck'
+        }
+
         # Load the first camera (front) pose to align the world
         camera_front_start = np.loadtxt(
             os.path.join(self.data_path, "extrinsics", f"{self.start_timestep:03d}_0.txt")
         )
         for k, v in instances_info.items():
             instances_model_types[int(k)] = OBJECT_CLASS_NODE_MAPPING[v["class_name"]]
+            if v["class_name"] in detection_mapping:
+                instances_detection_name[int(k)] = detection_mapping[v["class_name"]]
+            else:
+                instances_detection_name[int(k)] = v["class_name"]
+            
             for frame_idx, obj_to_world, box_size in zip(v["frame_annotations"]["frame_idx"], v["frame_annotations"]["obj_to_world"], v["frame_annotations"]["box_size"]):
                 # the first ego pose as the origin of the world coordinate system.
                 obj_to_world = np.array(obj_to_world).reshape(4, 4)
@@ -265,6 +290,7 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_true_id = instances_true_id[ins_frame_cnt > 0]
         instances_model_types = instances_model_types[ins_frame_cnt > 0]
         per_frame_instance_mask = per_frame_instance_mask[:, ins_frame_cnt > 0]
+        instances_detection_name = instances_detection_name[ins_frame_cnt > 0]
         
         # assign to the class
         # (num_frames, num_instances, 4, 4)
@@ -277,6 +303,8 @@ class NuScenesPixelSource(ScenePixelSource):
         self.instances_true_id = instances_true_id
         # (num_instances)
         self.instances_model_types = instances_model_types
+        # (num_instances) original string class names
+        self.instances_detection_name = instances_detection_name
 
         if self.data_cfg.load_smpl:
             # Collect camera-to-world matrices for all available cameras

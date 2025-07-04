@@ -7,6 +7,9 @@ import random
 import imageio
 import logging
 import argparse
+import json
+from typing import List, Dict, Any, Optional
+from scipy.spatial.transform import Rotation as R
 
 import torch
 from tools.eval import do_evaluation
@@ -290,16 +293,28 @@ def main(args):
 
         #----------------------------------------------------------------------------
         #----------------------------     Saving     --------------------------------
-        do_save = step > 0 and (
-            (step % cfg.logging.saveckpt_freq == 0) or (step == trainer.num_iters)
+        do_ckpt_save = step > 0 and (
+            (step % cfg.logging.save_ckpt_freq == 0) or (step == trainer.num_iters)
         ) and (args.resume_from is None)
-        if do_save:  
+        if do_ckpt_save:  
             trainer.save_checkpoint(
                 log_dir=cfg.log_dir,
                 save_only_model=True,
                 is_final=step == trainer.num_iters,
             )
         
+        do_pose_save = step > 0 and (
+            (step % cfg.logging.save_kf_box_pose_freq == 0) or (step == trainer.num_iters)
+        ) and (args.resume_from is None)
+        if do_pose_save:
+            # pose 저장
+            save_pose_annotations(
+                trainer,
+                dataset,
+                cfg.log_dir,
+                iteration=step,
+                keyframe_interval=cfg.logging.kf_interval,
+            )        
         #----------------------------------------------------------------------------
         #------------------------    Cache Image Error    ---------------------------
         if (
@@ -349,6 +364,138 @@ def main(args):
         time.sleep(1000000)
     
     return step
+
+# ---------------------------  Pose Saving Utils  -----------------------------
+# NOTE: Functions for exporting per-frame object poses.
+
+import json
+from typing import List, Dict, Any, Optional
+from scipy.spatial.transform import Rotation as R
+
+
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _transform_pose_to_world(
+    translation: np.ndarray, rotation: np.ndarray, camera_front_start: Optional[np.ndarray]
+):
+    """Convert object pose from camera to world coordinates (if reference given)."""
+    if camera_front_start is None:
+        return translation, rotation
+
+    rot_matrix = R.from_quat([rotation[1], rotation[2], rotation[3], rotation[0]]).as_matrix()
+    obj_to_cam = np.eye(4)
+    obj_to_cam[:3, :3] = rot_matrix
+    obj_to_cam[:3, 3] = translation
+
+    obj_to_world = camera_front_start @ obj_to_cam
+    world_t = obj_to_world[:3, 3]
+    world_r = obj_to_world[:3, :3]
+    world_q = R.from_matrix(world_r).as_quat()
+    world_q = np.array([world_q[3], world_q[0], world_q[1], world_q[2]])
+    return world_t, world_q
+
+
+# ---------------------------------------------------------------------------
+# Core extraction
+# ---------------------------------------------------------------------------
+
+
+def _extract_pose_annotations(
+    trainer,
+    dataset,
+    keyframe_interval: int = 5,
+    camera_front_start: Optional[np.ndarray] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Return a dict keyed by frame_idx (as str) → list of annotation dicts."""
+
+    results: Dict[str, List[Dict[str, Any]]] = {}
+
+    node_mappings = ["RigidNodes", "SMPLNodes", "DeformableNodes"]
+
+    for node_type in node_mappings:
+        if node_type not in trainer.models:
+            continue
+
+        model = trainer.models[node_type]
+        trans = model.instances_trans.detach().cpu().numpy()
+        if node_type == "SMPLNodes":
+            quats = model.instances_quats.detach().cpu().numpy()[:, :, 0, :]
+        else:
+            quats = model.instances_quats.detach().cpu().numpy()
+        sizes = model.instances_size.detach().cpu().numpy()
+
+        num_frames, num_instances = trans.shape[:2]
+        keyframes = range(0, num_frames, keyframe_interval)
+
+        for inst_id in range(num_instances):
+            inst_size = sizes[inst_id].tolist()
+            inst_size = [inst_size[1], inst_size[0], inst_size[2]]
+
+            for fi in keyframes:
+                t = trans[fi, inst_id]
+                q = quats[fi, inst_id]
+                if np.allclose(t, 0, atol=1e-6):
+                    continue
+
+                if camera_front_start is not None:
+                    t_world, q_world = _transform_pose_to_world(t, q, camera_front_start)
+                else:
+                    t_world, q_world = t, q
+
+                ann = {
+                    "translation": t_world.tolist(),
+                    "rotation": q_world.tolist(),
+                    "size": inst_size,
+                    "detection_name": dataset.pixel_source.instances_detection_name[inst_id],
+                    "instance_id": int(inst_id),
+                    "node_type": node_type,
+                    "confidence": 1.0,
+                }
+
+                results.setdefault(str(fi), []).append(ann)
+
+    return results
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def save_pose_annotations(
+    trainer,
+    dataset,
+    log_dir: str,
+    iteration: int,
+    keyframe_interval: int = 5,
+):
+    """High-level helper called inside training loop."""
+
+    # front camera pose (first frame) for world alignment
+    camera_front_start = dataset.pixel_source.camera_front_start
+
+    results = _extract_pose_annotations(
+        trainer,
+        dataset,
+        keyframe_interval=keyframe_interval,
+        camera_front_start=camera_front_start,
+    )
+
+    poses_dir = os.path.join(log_dir, "box_poses")
+    os.makedirs(poses_dir, exist_ok=True)
+    file_path = os.path.join(poses_dir, f"box_poses_{iteration:05d}.json")
+
+    output_data = {
+        "meta": {"use_camera": False, "use_lidar": True},
+        "results": results,
+    }
+    with open(file_path, "w") as f:
+        json.dump(output_data, f, indent=2)
+    logger.info(f"Saved pose annotations to {file_path}")
+
+# ------------------------  End Pose Saving Utils  -----------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Train Gaussian Splatting for a single scene")

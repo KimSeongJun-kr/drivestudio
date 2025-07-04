@@ -138,16 +138,6 @@ def transform_pose_to_world(translation: np.ndarray, rotation: np.ndarray, camer
     world_translation = obj_to_world[:3, 3]
     world_rotation_matrix = obj_to_world[:3, :3]
     
-    # yaw 회전 적용 (Z축 기준)
-    angle_deg = 0
-    angle_rad = np.deg2rad(angle_deg)
-    yaw_rotation = np.array([
-        [np.cos(angle_rad), -np.sin(angle_rad), 0],
-        [np.sin(angle_rad), np.cos(angle_rad), 0],
-        [0, 0, 1]
-    ])
-    world_rotation_matrix = yaw_rotation @ world_rotation_matrix
-    
     world_rotation_quat = R.from_matrix(world_rotation_matrix).as_quat()  # [x, y, z, w]
     world_rotation_quat = np.array([world_rotation_quat[3], world_rotation_quat[0], world_rotation_quat[1], world_rotation_quat[2]])  # [w, x, y, z]
     

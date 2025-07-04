@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, List, Callable
+from typing import Dict, Tuple, List, Callable, Optional
 from omegaconf import OmegaConf
 import os
 import abc
@@ -676,6 +676,8 @@ class ScenePixelSource(abc.ABC):
     image_error_buffered: bool = False
     # the downscale factor of the error buffer
     buffer_downscale: float = 1.0
+    # the camera front start
+    camera_front_start: np.ndarray = None
     
     # -------------- object annotations
     # (num_frame, num_instances, 4, 4)
@@ -688,6 +690,8 @@ class ScenePixelSource(abc.ABC):
     instances_model_types: Tensor = None
     # (num_frame, num_instances)
     per_frame_instance_mask: Tensor = None
+    # (num_instances,)
+    instances_detection_name: Optional[np.ndarray] = None
 
     def __init__(
         self, dataset_name, pixel_data_config: OmegaConf, device: torch.device = torch.device("cpu")
