@@ -751,7 +751,7 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
                 if lidar_points is None:
                     print(f"❌ LiDAR 포인트 로드 실패: {current_sample_token}")
 
-            sample_output_dir = os.path.join(output_dir, f"sample_{sample_idx:02d}_{current_sample_token}")
+            sample_output_dir = os.path.join(output_dir, "images", f"sample_{sample_idx:02d}_{current_sample_token}")
             os.makedirs(sample_output_dir, exist_ok=True)
 
             sample_contexts[current_sample_token] = {
@@ -796,7 +796,7 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
 
                 frame_path = os.path.join(sample_output_dir, f"frame_{bp_idx:02d}_iter_{iteration:06d}.png")
                 if os.path.exists(frame_path):
-                    print(f"skip frame: {frame_path}")
+                    print(f"skip frame: {Path(frame_path).name}")
                     ctx['frame_images'].append(frame_path)
                     continue
 
