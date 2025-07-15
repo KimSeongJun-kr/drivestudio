@@ -9,6 +9,7 @@ import os
 import glob
 import pandas as pd
 from pathlib import Path
+import re
 
 from nuscenes import NuScenes
 from nuscenes.eval.detection.config import config_factory
@@ -218,6 +219,42 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
         'num_matched_boxes': len(match_data_copy['trans_err'])
     }
 
+def parse_metrics_json(metrics_path: str, target_iteration: int) -> Dict[str, Optional[float]]:
+    """metrics.json 파일에서 특정 iteration의 psnr과 ssim 값을 파싱합니다.
+    
+    Args:
+        metrics_path: metrics.json 파일 경로
+        target_iteration: 찾을 iteration 번호
+        
+    Returns:
+        psnr과 ssim 값을 포함한 딕셔너리
+    """
+    result: Dict[str, Optional[float]] = {'psnr': None, 'ssim': None}
+    
+    if not os.path.exists(metrics_path):
+        print(f"❌ metrics.json 파일을 찾을 수 없습니다: {metrics_path}")
+        return result
+    
+    try:
+        with open(metrics_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                try:
+                    data = json.loads(line)
+                    if data.get('iteration') == target_iteration:
+                        result['psnr'] = data.get('train_metrics/psnr', None)
+                        result['ssim'] = data.get('losses/ssim_loss', None)
+                        break
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        print(f"❌ metrics.json 파일 읽기 중 오류 발생: {e}")
+    
+    return result
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Multi-file 3D bounding box evaluation")
@@ -236,7 +273,7 @@ def main() -> None:
     parser.add_argument(
         "--tar",
         type=str,
-        default='/workspace/drivestudio/output/box_experiments_0702',
+        default='/workspace/drivestudio/output/box_experiments_0714',
         help="Directory to search for target files",
     )
     parser.add_argument(
@@ -427,17 +464,38 @@ def main() -> None:
         # Store results
         # Get parent directory name (1st level up from file)
         path_parts = Path(target_file).parts
-        directory = ''
         try: 
             directory = path_parts[-3]
+            metrics_path = Path(target_file).parents[1] / 'metrics.json'
         except:
-            directory = os.path.dirname(target_file)
+            directory = Path(target_file).parents[1]
+            metrics_path = Path(target_file).parents[1] / 'metrics.json'
+
+        # Extract iteration number from filename and parse metrics
+        match = re.search(r'(\d+)', args.name)
+        iteration_number = int(match.group(1)) if match else 80000
+
+        psnr, ssim = None, None
+        if iteration_number is not None:
+            if os.path.exists(metrics_path):
+                metrics_data = parse_metrics_json(str(metrics_path), iteration_number)
+                psnr, ssim = metrics_data['psnr'], metrics_data['ssim']
+                if args.verbose:
+                    print(f"📊 Iteration {iteration_number}: PSNR={psnr}, SSIM={ssim}")
+            else:
+                if args.verbose:
+                    print(f"❌ metrics.json 파일을 찾을 수 없습니다: {metrics_path}")
+        else:
+            if args.verbose:
+                print(f"❌ 파일명에서 iteration 번호를 추출할 수 없습니다: {args.name}")
 
         result_entry = {
             'file_path': target_file,
             'file_name': os.path.basename(target_file),
             'directory': directory,
-            **eval_results
+            **eval_results,
+            'psnr': psnr,
+            'ssim': ssim
         }
         results.append(result_entry)
         
