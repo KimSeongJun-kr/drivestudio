@@ -248,14 +248,20 @@ class MultiTrainer(BasicTrainer):
         )
         
         # render sky
-        sky_model = self.models['Sky']
-        outputs["rgb_sky"] = sky_model(image_infos)
-        outputs["rgb_sky_blend"] = outputs["rgb_sky"] * (1.0 - outputs["opacity"])
+        if "Sky" in self.models:
+            sky_model = self.models['Sky']
+            outputs["rgb_sky"] = sky_model(image_infos)
+            outputs["rgb_sky_blend"] = outputs["rgb_sky"] * (1.0 - outputs["opacity"])
         
-        # affine transformation
-        outputs["rgb"] = self.affine_transformation(
-            outputs["rgb_gaussians"] + outputs["rgb_sky"] * (1.0 - outputs["opacity"]), image_infos
-        )
+            # affine transformation
+            outputs["rgb"] = self.affine_transformation(
+                outputs["rgb_gaussians"] + outputs["rgb_sky"] * (1.0 - outputs["opacity"]), image_infos
+            )
+        else:
+            # affine transformation
+            outputs["rgb"] = self.affine_transformation(
+                outputs["rgb_gaussians"], image_infos
+            )
         
         if not self.training and self.render_each_class:
             with torch.no_grad():
@@ -268,7 +274,11 @@ class MultiTrainer(BasicTrainer):
 
         if not self.training or self.render_dynamic_mask:
             with torch.no_grad():
-                gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
+                if "Background" in self.gaussian_classes:
+                    gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
+                else:
+                    gaussian_mask = self.pts_labels != -1
+
                 sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
                 outputs["Dynamic_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                 outputs["Dynamic_opacity"] = sep_opacity

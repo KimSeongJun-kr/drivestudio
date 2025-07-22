@@ -34,7 +34,8 @@ class SingleTrainer(BasicTrainer):
         
     def _init_models(self):
         # gaussian model classes
-        self.gaussian_classes["Background"] = GSModelType.Background
+        if "Background" in self.model_config:
+            self.gaussian_classes["Background"] = GSModelType.Background
      
         for class_name, model_cfg in self.model_config.items():
             # update model config for gaussian classes

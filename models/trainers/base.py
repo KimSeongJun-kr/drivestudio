@@ -504,7 +504,7 @@ class BasicTrainer(nn.Module):
         total_loss = sum(loss for loss in loss_dict.values())
         self.grad_scaler.scale(total_loss).backward()
         self.optimizer_step()
-        
+
         scale = self.grad_scaler.get_scale()
         self.grad_scaler.update()
         
@@ -539,15 +539,17 @@ class BasicTrainer(nn.Module):
         # rgb loss
         Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
         simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
-        loss_dict.update({
-            "rgb_loss": self.losses_dict.rgb.w * Ll1,
-            "ssim_loss": self.losses_dict.ssim.w * simloss,
-        })
+        if not torch.isnan(Ll1).any() and not torch.isnan(simloss).any():
+            loss_dict.update({
+                "rgb_loss": self.losses_dict.rgb.w * Ll1,
+                "ssim_loss": self.losses_dict.ssim.w * simloss,
+            })
         
         # mask loss
         if self.sky_opacity_loss_fn is not None:
             sky_loss_opacity = self.sky_opacity_loss_fn(pred_occupied_mask, gt_occupied_mask) * self.losses_dict.mask.w
-            loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
+            if not torch.isnan(sky_loss_opacity).any():
+                loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
         
         # depth loss
         if self.depth_loss_fn is not None:
@@ -562,15 +564,18 @@ class BasicTrainer(nn.Module):
             else:
                 decay_weight = 1
             depth_loss = depth_loss * self.losses_dict.depth.w * decay_weight
-            loss_dict.update({"depth_loss": depth_loss})
+            if not torch.isnan(depth_loss).any():
+                loss_dict.update({"depth_loss": depth_loss})
             
         # ----- reg loss -----
         opacity_entropy_reg = self.losses_dict.get("opacity_entropy", None)
         if opacity_entropy_reg is not None:
             pred_opacity = torch.clamp(outputs["opacity"].squeeze(), 1e-6, 1 - 1e-6)
-            loss_dict.update({
-                "opacity_entropy_loss": opacity_entropy_reg.w * (-pred_opacity * torch.log(pred_opacity)).mean()
-            })
+            opacity_entropy_reg_loss = (-pred_opacity * torch.log(pred_opacity)).mean()
+            if not torch.isnan(opacity_entropy_reg_loss).any():
+                loss_dict.update({
+                    "opacity_entropy_loss": opacity_entropy_reg.w * opacity_entropy_reg_loss
+                })
             
         # from pvg: https://github.com/fudan-zvg/PVG/blob/b4162a9135282e0f3c929054f16be1b3fbacd77a/train.py#L161
         inverse_depth_smoothness_reg = self.losses_dict.get("inverse_depth_smoothness", None)
@@ -580,9 +585,10 @@ class BasicTrainer(nn.Module):
                 inverse_depth[None].repeat(1, 1, 1, 3).permute(0, 3, 1, 2),
                 image_infos["pixels"][None].permute(0, 3, 1, 2)
             )
-            loss_dict.update({
-                "inverse_depth_smoothness_loss": inverse_depth_smoothness_reg.w * loss_inv_depth
-            })
+            if not torch.isnan(loss_inv_depth).any():
+                loss_dict.update({
+                    "inverse_depth_smoothness_loss": inverse_depth_smoothness_reg.w * loss_inv_depth
+                })
             
         # affine reg loss
         affine_reg = self.losses_dict.get("affine", None)
@@ -591,9 +597,10 @@ class BasicTrainer(nn.Module):
             reg_mat = torch.eye(3, device=self.device)
             reg_shift = torch.zeros(3, device=self.device)
             loss_affine = torch.abs(affine_trs[..., :3, :3] - reg_mat).mean() + torch.abs(affine_trs[..., :3, 3:] - reg_shift).mean()
-            loss_dict.update({
-                "affine_loss": affine_reg.w * loss_affine
-            })
+            if not torch.isnan(loss_affine).any():
+                loss_dict.update({
+                    "affine_loss": affine_reg.w * loss_affine
+                })
 
         # dynamic region loss
         dynamic_region_weighted_losses = self.losses_dict.get("dynamic_region", None)
@@ -608,15 +615,17 @@ class BasicTrainer(nn.Module):
                 
                 if dynamic_pred_mask.sum() > 0:
                     Ll1 = torch.abs(gt_rgb[dynamic_pred_mask] - predicted_rgb[dynamic_pred_mask]).mean()
-                    loss_dict.update({
-                        "vehicle_region_rgb_loss": weight_factor * Ll1,
-                    })
+                    if not torch.isnan(Ll1).any():
+                        loss_dict.update({
+                            "vehicle_region_rgb_loss": weight_factor * Ll1,
+                        })
             
         # compute gaussian reg loss
         for class_name in self.gaussian_classes.keys():
             class_reg_loss = self.models[class_name].compute_reg_loss()
             for k, v in class_reg_loss.items():
-                loss_dict[f"{class_name}_{k}"] = v
+                if not torch.isnan(v).any():
+                    loss_dict[f"{class_name}_{k}"] = v
         return loss_dict
     
     def compute_metrics(
@@ -749,9 +758,10 @@ class BasicTrainer(nn.Module):
             "_opacities": [],
         }
         for class_name in ["Background"]:
-            gs = self.models[class_name].get_gaussians(cam)
-            if gs is None:
-                continue
+            if class_name in self.gaussian_classes:
+                gs = self.models[class_name].get_gaussians(cam)
+                if gs is None:
+                    continue
 
             for k, _ in gs.items():
                 gs_dict[k].append(gs[k])
