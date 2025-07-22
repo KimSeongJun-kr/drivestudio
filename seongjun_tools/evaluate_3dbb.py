@@ -298,10 +298,9 @@ def filter_eval_boxes(nusc: NuScenes,
 
 def accumulate(gt_boxes: EvalBoxes,
                 pred_boxes: EvalBoxes,
-                sample_ann_tokens: Dict[str, List],
                 dist_fcn: Callable,
                 dist_th: float,
-                verbose: bool = False) -> Tuple[DetectionMetricData, Dict[str, List[float]], Dict[str, List[Tuple[str, DetectionBox]]]]:
+                verbose: bool = False) -> Tuple[DetectionMetricData, Dict[str, List[float]]]:
     """
     Average Precision over predefined different recall thresholds for a single distance threshold.
     The recall/conf thresholds and other raw metrics will be used in secondary metrics.
@@ -325,7 +324,7 @@ def accumulate(gt_boxes: EvalBoxes,
 
     # For missing classes in the GT, return a data structure corresponding to no predictions.
     if npos == 0:
-        return DetectionMetricData.no_predictions(), {}, {}
+        return DetectionMetricData.no_predictions(), {}
 
     # Organize the predictions in a single list.
     pred_boxes_list = [box for box in pred_boxes.all]
@@ -362,7 +361,6 @@ def accumulate(gt_boxes: EvalBoxes,
         pred_box = pred_boxes_list[ind]
         min_dist = np.inf
         match_gt_idx = None
-        ann_tokens = sample_ann_tokens[pred_box.sample_token]
 
         for gt_idx, gt_box in enumerate(gt_boxes[pred_box.sample_token]):
 
@@ -372,14 +370,12 @@ def accumulate(gt_boxes: EvalBoxes,
                 if this_distance < min_dist:
                     min_dist = this_distance
                     match_gt_idx = gt_idx
-                    match_ann_token = ann_tokens[gt_idx]
 
         # If the closest match is close enough according to threshold we have a match!
         is_match = min_dist < dist_th
 
         if is_match:
             taken.add((pred_box.sample_token, match_gt_idx))
-            match_pred_boxes[pred_box.sample_token].append((match_ann_token, pred_box))
             # print(min_dist)
             #  Update tp, fp and confs.
             tp.append(1)
@@ -409,7 +405,7 @@ def accumulate(gt_boxes: EvalBoxes,
 
     # Check if we have any matches. If not, just return a "no predictions" array.
     if len(match_data['trans_err']) == 0:
-        return DetectionMetricData.no_predictions(), {}, {}
+        return DetectionMetricData.no_predictions(), {}
 
     # ---------------------------------------------
     # Calculate and interpolate precision and recall
@@ -457,7 +453,7 @@ def accumulate(gt_boxes: EvalBoxes,
                                vel_err=match_data['vel_err'],
                                scale_err=match_data['scale_err'],
                                orient_err=match_data['orient_err'],
-                               attr_err=match_data['attr_err']), match_data_copy, match_pred_boxes
+                               attr_err=match_data['attr_err']), match_data_copy
 
 def filter_boxes_by_scene(nusc: NuScenes, boxes: EvalBoxes, scene_name: str) -> EvalBoxes:
     """특정 scene에 해당하는 boxes만 필터링합니다.
@@ -494,7 +490,6 @@ def filter_boxes_by_scene(nusc: NuScenes, boxes: EvalBoxes, scene_name: str) -> 
         if sample_token in boxes.sample_tokens:
             filtered_boxes.add_boxes(sample_token, boxes[sample_token])
 
-    print(f"✅ Scene '{scene_name}'에서 {len(scene_sample_tokens)}개의 샘플을 찾았습니다.")
     return filtered_boxes
     
 def main() -> None:
@@ -561,6 +556,7 @@ def main() -> None:
         print(f"Filtering boxes by scene: {args.scene_name}")
         pred_boxes = filter_boxes_by_scene(nusc, pred_boxes, args.scene_name)
         gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, args.scene_name)
+        print(f"✅ Scene '{args.scene_name}'에서 {len(pred_boxes.sample_tokens)}개의 샘플을 찾았습니다.")
     else:
         # Filter to only include scenes that exist in both pred and gt
         print("Filtering to common scenes in both pred and gt...")
@@ -597,12 +593,9 @@ def main() -> None:
     # -----------------------------------
     print('Accumulating metric data...')
     metric_data_list = DetectionMetricDataList()
-    all_matched_pred_boxes = defaultdict(list)
     dist_th = 1.0
 
-    md, match_data_copy, match_pred_boxes = accumulate(gt_boxes, pred_boxes, sample_ann_tokens, config.dist_fcn_callable, dist_th)
-    for sample_token, matched_pred_boxes in match_pred_boxes.items():
-        all_matched_pred_boxes[sample_token].extend(matched_pred_boxes)
+    md, match_data_copy = accumulate(gt_boxes, pred_boxes, config.dist_fcn_callable, dist_th)
     metric_data_list.set('all', dist_th, md)
 
 
