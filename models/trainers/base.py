@@ -328,10 +328,21 @@ class BasicTrainer(nn.Module):
         if "CamPose" in self.models.keys() and not novel_view:
             camtoworlds = self.models["CamPose"](camtoworlds, image_ids)
         
+        # Compute the expand camera poses        
+        expand_camtoworlds = expand_camtoworlds_gt = None
+        if camera_infos["expand_camera_to_worlds"] is not None:
+            expand_camtoworlds_gt = camera_infos["expand_camera_to_worlds"]
+            expand_camtoworlds = torch.zeros_like(expand_camtoworlds_gt)
+            for i in range(expand_camtoworlds_gt.shape[0]):
+                exp_cam_to_ori_cam = torch.matmul(camtoworlds_gt.inverse(), expand_camtoworlds_gt[i])
+                expand_camtoworlds[i] = torch.matmul(camtoworlds, exp_cam_to_ori_cam)
+
         # collect camera information
         camera_dict = dataclass_camera(
             camtoworlds=camtoworlds,
             camtoworlds_gt=camtoworlds_gt,
+            expand_camtoworlds=expand_camtoworlds,
+            expand_camtoworlds_gt=expand_camtoworlds_gt,
             Ks=camera_infos["intrinsics"],
             H=camera_infos["height"],
             W=camera_infos["width"]
@@ -389,14 +400,14 @@ class BasicTrainer(nn.Module):
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
     
-        def render_fn(opaticy_mask=None, return_info=False):
+        def render_fn(opaticy_mask=None, return_info=False, ctow=cam.camtoworlds, render_mode="RGB+ED"):
             renders, alphas, info = rasterization(
                 means=gs.means,
                 quats=gs.quats,
                 scales=gs.scales,
                 opacities=gs.opacities.squeeze()*opaticy_mask if opaticy_mask is not None else gs.opacities.squeeze(),
                 colors=gs.rgbs,
-                viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
+                viewmats=torch.linalg.inv(ctow)[None, ...],  # [C, 4, 4]
                 Ks=cam.Ks[None, ...],  # [C, 3, 3]
                 width=cam.W,
                 height=cam.H,
@@ -404,26 +415,46 @@ class BasicTrainer(nn.Module):
                 absgrad=self.render_cfg.absgrad,
                 sparse_grad=self.render_cfg.sparse_grad,
                 rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
+                render_mode=render_mode,
                 **kwargs,
             )
             renders = renders[0]
             alphas = alphas[0].squeeze(-1)
             assert self.render_cfg.batch_size == 1, "batch size must be 1, will support batch size > 1 in the future"
-            
-            assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
-            rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+
+            if render_mode == "RGB+ED":
+                assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
+                rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+                rendered_rgb = torch.clamp(rendered_rgb, max=1.0)
+            elif render_mode == "D" or render_mode == "ED":
+                assert renders.shape[-1] == 1, f"Must render depth and alpha"
+                rendered_rgb = None
+                rendered_depth = renders
+            else:
+                raise ValueError(f"Invalid render mode: {render_mode}")
             
             if not return_info:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None]
+                return rendered_rgb, rendered_depth, alphas[..., None]
             else:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], info
+                return rendered_rgb, rendered_depth, alphas[..., None], info
         
+        # render expand depth
+        expand_depths = None
+        if cam.expand_camtoworlds is not None:
+            expand_depths = []
+            for extand_ctow in cam.expand_camtoworlds:
+                _, expand_depth, _ = render_fn(return_info=False, ctow=extand_ctow, render_mode="ED")
+                expand_depths.append(expand_depth)
+            expand_depths = torch.stack(expand_depths, dim=0)
+
         # render rgb and opacity
         rgb, depth, opacity, self.info = render_fn(return_info=True)
+
         results = {
             "rgb_gaussians": rgb,
             "depth": depth, 
-            "opacity": opacity
+            "opacity": opacity,
+            "expand_depths": expand_depths
         }
         
         if self.training:
@@ -483,7 +514,6 @@ class BasicTrainer(nn.Module):
             cam=processed_cam,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
-            render_mode="RGB+ED",
             radius_clip=self.render_cfg.get('radius_clip', 0.)
         )
         
@@ -566,7 +596,20 @@ class BasicTrainer(nn.Module):
             depth_loss = depth_loss * self.losses_dict.depth.w * decay_weight
             if not torch.isnan(depth_loss).any():
                 loss_dict.update({"depth_loss": depth_loss})
-            
+
+        # expand depth loss
+        expand_depth = self.losses_dict.get("expand_depth", None)
+        if expand_depth is not None and outputs["expand_depths"] is not None:
+            expand_depth_loss_sum = 0
+            for i in range(outputs["expand_depths"].shape[0]):
+                gt_expand_depth = image_infos["lidar_expand_depth_maps"][i]
+                lidar_hit_mask = (gt_expand_depth > 0).float() # no need to mask out the egocar region. it aready masked out in projection
+                pred_expand_depth = outputs["expand_depths"][i]
+                expand_depth_loss = self.depth_loss_fn(pred_expand_depth, gt_expand_depth, lidar_hit_mask)
+                expand_depth_loss_sum += expand_depth_loss * expand_depth.w
+            if not torch.isnan(expand_depth_loss_sum).any():
+                loss_dict.update({"expand_depth_loss": expand_depth_loss_sum})
+
         # ----- reg loss -----
         opacity_entropy_reg = self.losses_dict.get("opacity_entropy", None)
         if opacity_entropy_reg is not None:

@@ -139,7 +139,9 @@ class CameraData(object):
             self.load_dynamic_masks()
         if load_sky_mask:
             self.load_sky_masks()
+        self.expand_cam_to_worlds = None # will be loaded by: self.load_expand_cam_to_worlds()
         self.lidar_depth_maps = None # will be loaded by: self.load_depth()
+        self.lidar_expand_depth_maps_total = None # will be loaded by: self.load_depth_expand()
         self.image_error_maps = None # will be built by: self.build_image_error_buffer()
         self.to(self.device)
         self.downscale_factor = 1.0
@@ -184,6 +186,23 @@ class CameraData(object):
         self.cam_to_worlds = cam_to_worlds # (num_frames, 4, 4)
         self.intrinsics = intrinsics # (num_frames, 3, 3)
         self.distortions = distortions # (num_frames, 5)
+
+    def load_expand_cam_to_worlds(self, expand_dst_to_worlds: Tensor, expand_number: int):
+        interp_poses = []
+        for frame_idx in range(self.num_frames):
+            interp_poses_per_frame = []
+
+            expand_translation_diff = expand_dst_to_worlds[frame_idx][..., :3, 3] - self.cam_to_worlds[frame_idx][..., :3, 3]   
+            for i in range(expand_number):
+                # Interpolate translation
+                t = torch.tensor((i + 1) / expand_number, dtype=torch.float32, device=self.device)
+                interp_pose = self.cam_to_worlds[frame_idx].clone()
+                interp_pose[..., :3, 3] = interp_pose[..., :3, 3] + t * expand_translation_diff[..., :3]
+                interp_poses_per_frame.append(interp_pose)
+            
+            interp_poses_per_frame = torch.stack(interp_poses_per_frame, dim=0)
+            interp_poses.append(interp_poses_per_frame)
+        self.expand_cam_to_worlds = torch.stack(interp_poses, dim=0)
 
     def create_all_filelist(self):
         """
@@ -379,6 +398,12 @@ class CameraData(object):
         lidar_depth_maps: Tensor,
     ):
         self.lidar_depth_maps = lidar_depth_maps.to(self.device)
+        
+    def load_depth_expand(
+        self,
+        lidar_expand_depth_maps_total: Tensor,
+    ):
+        self.lidar_expand_depth_maps_total = lidar_expand_depth_maps_total.to(self.device)
         
     def load_time(
         self,
@@ -600,6 +625,16 @@ class CameraData(object):
                 # else:
                 lidar_depth_map = sparse_lidar_map_downsampler(lidar_depth_map, self.downscale_factor)
 
+        lidar_expand_depth_maps = None
+        if self.lidar_expand_depth_maps_total is not None:
+            lidar_expand_depth_maps = self.lidar_expand_depth_maps_total[frame_idx]
+            if self.downscale_factor != 1.0:
+                ds_depth_maps = []
+                for i in range(self.lidar_expand_depth_maps_total.shape[1]):
+                    ds_depth_map = sparse_lidar_map_downsampler(self.lidar_expand_depth_maps_total[frame_idx][i], self.downscale_factor)
+                    ds_depth_maps.append(ds_depth_map)
+                lidar_expand_depth_maps = torch.stack(ds_depth_maps, dim=0)
+            
         if self.normalized_time is not None:
             normalized_time = torch.full(
                 (img_height, img_width),
@@ -622,6 +657,9 @@ class CameraData(object):
             dtype=torch.long,
         )
         c2w = self.cam_to_worlds[frame_idx]
+        expand_c2ws = None
+        if self.expand_cam_to_worlds is not None:
+            expand_c2ws = self.expand_cam_to_worlds[frame_idx]
         intrinsics = self.intrinsics[frame_idx] * self.downscale_factor
         intrinsics[2, 2] = 1.0
         origins, viewdirs, direction_norm = get_rays(x, y, c2w, intrinsics)
@@ -643,6 +681,7 @@ class CameraData(object):
             "vehicle_masks": vehicle_mask,
             "egocar_masks": egocar_mask,
             "lidar_depth_map": lidar_depth_map,
+            "lidar_expand_depth_maps": lidar_expand_depth_maps,
         }
         image_infos = {k: v for k, v in _image_infos.items() if v is not None}
         
@@ -650,6 +689,7 @@ class CameraData(object):
             "cam_id": camera_id,
             "cam_name": self.cam_name,
             "camera_to_world": c2w,
+            "expand_camera_to_worlds": expand_c2ws,
             "height": torch.tensor(img_height, dtype=torch.long, device=c2w.device),
             "width": torch.tensor(img_width, dtype=torch.long, device=c2w.device),
             "intrinsics": intrinsics,
@@ -733,6 +773,11 @@ class ScenePixelSource(abc.ABC):
         # set initial downscale factor
         for cam_id in self.camera_list:
             self.camera_data[cam_id].set_downscale_factor(self._downscale_factor)
+
+
+    def load_expand_cam_to_worlds(self, expand_dst_to_worlds: Tensor, expand_number: int):
+        for cam in self.camera_data.values():
+            cam.load_expand_cam_to_worlds(expand_dst_to_worlds, expand_number)
 
     def to(self, device: torch.device) -> "ScenePixelSource":
         """

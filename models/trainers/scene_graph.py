@@ -243,7 +243,6 @@ class MultiTrainer(BasicTrainer):
             cam=processed_cam,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
-            render_mode="RGB+ED",
             radius_clip=self.render_cfg.get('radius_clip', 0.)
         )
         
