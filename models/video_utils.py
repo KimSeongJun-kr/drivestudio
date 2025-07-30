@@ -234,34 +234,32 @@ def render(
                 sky_masks.append(get_numpy(image_infos["sky_masks"]))
                 
             # ------------- lidar ------------- #
-            if "lidar_depth_map" in image_infos:
-                if image_infos["lidar_depth_map"] is not None:
-                    depth_map = image_infos["lidar_depth_map"]
-                    depth_img = depth_map.cpu().numpy()
-                    depth_img = depth_visualizer(depth_img, depth_img > 0)
-                    mask = (depth_map.unsqueeze(-1) > 0).cpu().numpy()
-                    lidar_on_image = image_infos["pixels"].cpu().numpy() * (1 - mask) + depth_img * mask
-                    lidar_on_images.append(lidar_on_image)
+            if "lidar_depth_map" in image_infos and image_infos["lidar_depth_map"] is not None:
+                depth_map = image_infos["lidar_depth_map"]
+                depth_img = depth_map.cpu().numpy()
+                depth_img = depth_visualizer(depth_img, depth_img > 0)
+                mask = (depth_map.unsqueeze(-1) > 0).cpu().numpy()
+                lidar_on_image = image_infos["pixels"].cpu().numpy() * (1 - mask) + depth_img * mask
+                lidar_on_images.append(lidar_on_image)
 
-            if "expand_lidar_depth_maps" in image_infos:
-                if image_infos["expand_lidar_depth_maps"] is not None:
-                    # for i in range(image_infos["expand_lidar_depth_maps"].shape[0]):
-                    #     expand_depth_map = image_infos["expand_lidar_depth_maps"][i]
-                    #     expand_depth_img = expand_depth_map.cpu().numpy()
-                    #     expand_depth_img = depth_visualizer(expand_depth_img, expand_depth_img > 0)
-                    #     mask = (expand_depth_map.unsqueeze(-1) > 0).cpu().numpy()
-                    #     lidar_expand_on_image = image_infos["expand_lidar_depth_maps"][i].cpu().numpy()[..., None] * (1 - mask) + expand_depth_img * mask
-                    #     lidar_expand_on_images.append(lidar_expand_on_image)
-                    expand_depth_map = image_infos["expand_lidar_depth_maps"][-1]
-                    expand_depth_img = expand_depth_map.cpu().numpy()
-                    expand_depth_img = depth_visualizer(expand_depth_img, expand_depth_img > 0)
-                    mask = (expand_depth_map.unsqueeze(-1) > 0).cpu().numpy()
-                    expand_depth_render =  depth_visualizer(expand_depths[-1], expand_opacities[-1])
-                    lidar_expand_on_depth = expand_depth_render * (1 - mask) + expand_depth_img * mask
-                    lidar_expand_on_image = get_numpy(results["expand_rgbs"][-1]) * (1 - mask) + expand_depth_img * mask
-                    # lidar_expand_on_image = image_infos["expand_lidar_depth_maps"][-1].cpu().numpy()[..., None] * (1 - mask) + expand_depth_img * mask
-                    lidar_expand_on_dept.append(lidar_expand_on_depth)
-                    lidar_expand_on_images.append(lidar_expand_on_image)
+            if "expand_lidar_depth_maps" in image_infos and image_infos["expand_lidar_depth_maps"] is not None:
+                # for i in range(image_infos["expand_lidar_depth_maps"].shape[0]):
+                #     expand_depth_map = image_infos["expand_lidar_depth_maps"][i]
+                #     expand_depth_img = expand_depth_map.cpu().numpy()
+                #     expand_depth_img = depth_visualizer(expand_depth_img, expand_depth_img > 0)
+                #     mask = (expand_depth_map.unsqueeze(-1) > 0).cpu().numpy()
+                #     lidar_expand_on_image = image_infos["expand_lidar_depth_maps"][i].cpu().numpy()[..., None] * (1 - mask) + expand_depth_img * mask
+                #     lidar_expand_on_images.append(lidar_expand_on_image)
+                expand_depth_map = image_infos["expand_lidar_depth_maps"][-1]
+                expand_depth_img = expand_depth_map.cpu().numpy()
+                expand_depth_img = depth_visualizer(expand_depth_img, expand_depth_img > 0)
+                mask = (expand_depth_map.unsqueeze(-1) > 0).cpu().numpy()
+                expand_depth_render =  depth_visualizer(expand_depths[-1], expand_opacities[-1])
+                lidar_expand_on_depth = expand_depth_render * (1 - mask) + expand_depth_img * mask
+                lidar_expand_on_image = get_numpy(results["expand_rgbs"][-1]) * (1 - mask) + expand_depth_img * mask
+                # lidar_expand_on_image = image_infos["expand_lidar_depth_maps"][-1].cpu().numpy()[..., None] * (1 - mask) + expand_depth_img * mask
+                lidar_expand_on_dept.append(lidar_expand_on_depth)
+                lidar_expand_on_images.append(lidar_expand_on_image)
 
             if compute_metrics:
                 psnr = compute_psnr(rgb, image_infos["pixels"])

@@ -330,7 +330,7 @@ class BasicTrainer(nn.Module):
         
         # Compute the expand camera poses        
         expand_camtoworlds = expand_camtoworlds_gt = None
-        if camera_infos["expand_camera_to_worlds"] is not None:
+        if "expand_camera_to_worlds" in camera_infos and camera_infos["expand_camera_to_worlds"] is not None:
             expand_camtoworlds_gt = camera_infos["expand_camera_to_worlds"]
             expand_camtoworlds = torch.zeros_like(expand_camtoworlds_gt)
             for i in range(expand_camtoworlds_gt.shape[0]):
@@ -609,7 +609,7 @@ class BasicTrainer(nn.Module):
 
         # expand depth loss
         expand_depth = self.losses_dict.get("expand_depth", None)
-        if expand_depth is not None and outputs["expand_depths"] is not None:
+        if expand_depth is not None and "expand_depths" in outputs and outputs["expand_depths"] is not None:
             expand_depth_loss_sum = 0
             for i in range(outputs["expand_depths"].shape[0]):
                 gt_expand_depth = image_infos["expand_lidar_depth_maps"][i]

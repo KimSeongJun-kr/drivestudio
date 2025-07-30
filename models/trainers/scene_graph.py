@@ -263,7 +263,7 @@ class MultiTrainer(BasicTrainer):
             )
 
         outputs["expand_rgbs"] = None
-        if "expand_rgbs_gaussians" in outputs:
+        if "expand_rgbs_gaussians" in outputs and outputs["expand_rgbs_gaussians"] is not None:
             expand_rgbs = []
             for i in range(outputs["expand_rgbs_gaussians"].shape[0]):
                 expand_rgb =self.affine_transformation(
