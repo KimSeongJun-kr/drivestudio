@@ -154,7 +154,7 @@ def main(args):
         "RigidNodes_rgbs",
         "DeformableNodes_rgbs",
         "SMPLNodes_rgbs",
-        # "depths",
+        "depths",
         # "Background_depths",
         # "Dynamic_depths",
         # "RigidNodes_depths",
@@ -164,6 +164,10 @@ def main(args):
     ]
     if cfg.render.vis_lidar:
         render_keys.insert(0, "lidar_on_images")
+    if cfg.render.vis_exp_lidar:
+        render_keys.insert(0, "lidar_expand_on_dept")
+        render_keys.insert(0, "lidar_expand_on_images")
+        render_keys.insert(0, "expand_depths")
     if cfg.render.vis_sky:
         render_keys += ["rgb_sky_blend", "rgb_sky"]
     if cfg.render.vis_error:

@@ -141,7 +141,7 @@ class CameraData(object):
             self.load_sky_masks()
         self.expand_cam_to_worlds = None # will be loaded by: self.load_expand_cam_to_worlds()
         self.lidar_depth_maps = None # will be loaded by: self.load_depth()
-        self.lidar_expand_depth_maps_total = None # will be loaded by: self.load_depth_expand()
+        self.expand_lidar_depth_maps_total = None # will be loaded by: self.load_depth_expand()
         self.image_error_maps = None # will be built by: self.build_image_error_buffer()
         self.to(self.device)
         self.downscale_factor = 1.0
@@ -401,9 +401,9 @@ class CameraData(object):
         
     def load_depth_expand(
         self,
-        lidar_expand_depth_maps_total: Tensor,
+        expand_lidar_depth_maps_total: Tensor,
     ):
-        self.lidar_expand_depth_maps_total = lidar_expand_depth_maps_total.to(self.device)
+        self.expand_lidar_depth_maps_total = expand_lidar_depth_maps_total.to(self.device)
         
     def load_time(
         self,
@@ -625,15 +625,15 @@ class CameraData(object):
                 # else:
                 lidar_depth_map = sparse_lidar_map_downsampler(lidar_depth_map, self.downscale_factor)
 
-        lidar_expand_depth_maps = None
-        if self.lidar_expand_depth_maps_total is not None:
-            lidar_expand_depth_maps = self.lidar_expand_depth_maps_total[frame_idx]
+        expand_lidar_depth_maps = None
+        if self.expand_lidar_depth_maps_total is not None:
+            expand_lidar_depth_maps = self.expand_lidar_depth_maps_total[frame_idx]
             if self.downscale_factor != 1.0:
                 ds_depth_maps = []
-                for i in range(self.lidar_expand_depth_maps_total.shape[1]):
-                    ds_depth_map = sparse_lidar_map_downsampler(self.lidar_expand_depth_maps_total[frame_idx][i], self.downscale_factor)
+                for i in range(self.expand_lidar_depth_maps_total.shape[1]):
+                    ds_depth_map = sparse_lidar_map_downsampler(self.expand_lidar_depth_maps_total[frame_idx][i], self.downscale_factor)
                     ds_depth_maps.append(ds_depth_map)
-                lidar_expand_depth_maps = torch.stack(ds_depth_maps, dim=0)
+                expand_lidar_depth_maps = torch.stack(ds_depth_maps, dim=0)
             
         if self.normalized_time is not None:
             normalized_time = torch.full(
@@ -681,7 +681,7 @@ class CameraData(object):
             "vehicle_masks": vehicle_mask,
             "egocar_masks": egocar_mask,
             "lidar_depth_map": lidar_depth_map,
-            "lidar_expand_depth_maps": lidar_expand_depth_maps,
+            "expand_lidar_depth_maps": expand_lidar_depth_maps,
         }
         image_infos = {k: v for k, v in _image_infos.items() if v is not None}
         
@@ -1144,7 +1144,7 @@ class ScenePixelSource(abc.ABC):
         render_data = []
         for i in range(len(traj)):
             c2w = traj[i]
-            
+
             # Generate ray origins and directions
             x, y = torch.meshgrid(torch.arange(W), torch.arange(H), indexing='xy')
             x, y = x.to(self.device), y.to(self.device)
@@ -1153,9 +1153,10 @@ class ScenePixelSource(abc.ABC):
             origins = origins.reshape(H, W, 3)
             viewdirs = viewdirs.reshape(H, W, 3)
             direction_norm = direction_norm.reshape(H, W, 1)
-            
+
             cam_infos = {
                 "camera_to_world": c2w,
+                "expand_camera_to_worlds": None,
                 "intrinsics": intrinsics,
                 "height": torch.tensor([H], dtype=torch.long, device=self.device),
                 "width": torch.tensor([W], dtype=torch.long, device=self.device),

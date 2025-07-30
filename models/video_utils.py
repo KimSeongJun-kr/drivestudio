@@ -103,15 +103,18 @@ def render(
     """
     # rgbs
     rgbs, gt_rgbs, rgb_sky_blend, rgb_sky = [], [], [], []
+    expand_rgbs = []
     Background_rgbs, RigidNodes_rgbs, DeformableNodes_rgbs, SMPLNodes_rgbs, Dynamic_rgbs = [], [], [], [], []
     error_maps = []
 
     # depths
-    depths, lidar_on_images = [], []
+    depths, lidar_on_images, lidar_expand_on_dept = [], [], []
+    expand_depths, lidar_expand_on_images = [], []
     Background_depths, RigidNodes_depths, DeformableNodes_depths, SMPLNodes_depths, Dynamic_depths = [], [], [], [], []
 
     # sky
     opacities, sky_masks = [], []
+    expand_opacities = []
     Background_opacities, RigidNodes_opacities, DeformableNodes_opacities, SMPLNodes_opacities, Dynamic_opacities = [], [], [], [], []
     
     # misc
@@ -153,6 +156,10 @@ def render(
             # ------------- rgb ------------- #
             rgb = results["rgb"]
             rgbs.append(get_numpy(rgb))
+            if "expand_rgbs" in results:
+                expand_rgb = results["expand_rgbs"][-1]
+                expand_rgbs.append(get_numpy(expand_rgb))
+
             if "pixels" in image_infos:
                 gt_rgbs.append(get_numpy(image_infos["pixels"]))
                 
@@ -198,9 +205,16 @@ def render(
             # ------------- depth ------------- #
             depth = results["depth"]
             depths.append(get_numpy(depth))
+            print(f"depth shape: {depth.shape}")
+            if "expand_depths" in results:
+                expand_depth = results["expand_depths"][-1]
+                expand_depths.append(get_numpy(expand_depth))
             # ------------- mask ------------- #
             if "opacity" in results:
                 opacities.append(get_numpy(results["opacity"]))
+            if "expand_opacities" in results:
+                expand_opacity = results["expand_opacities"][-1]
+                expand_opacities.append(get_numpy(expand_opacity))
             if "Background_depth" in results:
                 Background_depths.append(get_numpy(results["Background_depth"]))
                 Background_opacities.append(get_numpy(results["Background_opacity"]))
@@ -221,12 +235,33 @@ def render(
                 
             # ------------- lidar ------------- #
             if "lidar_depth_map" in image_infos:
-                depth_map = image_infos["lidar_depth_map"]
-                depth_img = depth_map.cpu().numpy()
-                depth_img = depth_visualizer(depth_img, depth_img > 0)
-                mask = (depth_map.unsqueeze(-1) > 0).cpu().numpy()
-                lidar_on_image = image_infos["pixels"].cpu().numpy() * (1 - mask) + depth_img * mask
-                lidar_on_images.append(lidar_on_image)
+                if image_infos["lidar_depth_map"] is not None:
+                    depth_map = image_infos["lidar_depth_map"]
+                    depth_img = depth_map.cpu().numpy()
+                    depth_img = depth_visualizer(depth_img, depth_img > 0)
+                    mask = (depth_map.unsqueeze(-1) > 0).cpu().numpy()
+                    lidar_on_image = image_infos["pixels"].cpu().numpy() * (1 - mask) + depth_img * mask
+                    lidar_on_images.append(lidar_on_image)
+
+            if "expand_lidar_depth_maps" in image_infos:
+                if image_infos["expand_lidar_depth_maps"] is not None:
+                    # for i in range(image_infos["expand_lidar_depth_maps"].shape[0]):
+                    #     expand_depth_map = image_infos["expand_lidar_depth_maps"][i]
+                    #     expand_depth_img = expand_depth_map.cpu().numpy()
+                    #     expand_depth_img = depth_visualizer(expand_depth_img, expand_depth_img > 0)
+                    #     mask = (expand_depth_map.unsqueeze(-1) > 0).cpu().numpy()
+                    #     lidar_expand_on_image = image_infos["expand_lidar_depth_maps"][i].cpu().numpy()[..., None] * (1 - mask) + expand_depth_img * mask
+                    #     lidar_expand_on_images.append(lidar_expand_on_image)
+                    expand_depth_map = image_infos["expand_lidar_depth_maps"][-1]
+                    expand_depth_img = expand_depth_map.cpu().numpy()
+                    expand_depth_img = depth_visualizer(expand_depth_img, expand_depth_img > 0)
+                    mask = (expand_depth_map.unsqueeze(-1) > 0).cpu().numpy()
+                    expand_depth_render =  depth_visualizer(expand_depths[-1], expand_opacities[-1])
+                    lidar_expand_on_depth = expand_depth_render * (1 - mask) + expand_depth_img * mask
+                    lidar_expand_on_image = get_numpy(results["expand_rgbs"][-1]) * (1 - mask) + expand_depth_img * mask
+                    # lidar_expand_on_image = image_infos["expand_lidar_depth_maps"][-1].cpu().numpy()[..., None] * (1 - mask) + expand_depth_img * mask
+                    lidar_expand_on_dept.append(lidar_expand_on_depth)
+                    lidar_expand_on_images.append(lidar_expand_on_image)
 
             if compute_metrics:
                 psnr = compute_psnr(rgb, image_infos["pixels"])
@@ -331,11 +366,16 @@ def render(
     results_dict["vehicle_psnr"] = non_zero_mean(vehicle_psnrs) if compute_metrics else -1
     results_dict["vehicle_ssim"] = non_zero_mean(vehicle_ssims) if compute_metrics else -1
     results_dict["rgbs"] = rgbs
+    if len(expand_rgbs) > 0:
+        results_dict["expand_rgbs"] = expand_rgbs
     results_dict["depths"] = depths
+    results_dict["expand_depths"] = expand_depths
     results_dict["cam_names"] = cam_names
     results_dict["cam_ids"] = cam_ids
     if len(opacities) > 0:
         results_dict["opacities"] = opacities
+    if len(expand_opacities) > 0:
+        results_dict["expand_opacities"] = expand_opacities
     if len(gt_rgbs) > 0:
         results_dict["gt_rgbs"] = gt_rgbs
     if len(error_maps) > 0:
@@ -348,6 +388,10 @@ def render(
         results_dict["gt_sky_masks"] = sky_masks
     if len(lidar_on_images) > 0:
         results_dict["lidar_on_images"] = lidar_on_images
+    if len(lidar_expand_on_dept) > 0:
+        results_dict["lidar_expand_on_dept"] = lidar_expand_on_dept
+    if len(lidar_expand_on_images) > 0:
+        results_dict["lidar_expand_on_images"] = lidar_expand_on_images
     if len(Background_rgbs) > 0:
         results_dict["Background_rgbs"] = Background_rgbs
     if len(RigidNodes_rgbs) > 0:
@@ -438,10 +482,15 @@ def render_novel_views(trainer, render_data: list, save_path: str, fps: int = 30
         for frame_data in render_data:
             # Move data to GPU
             for key, value in frame_data["cam_infos"].items():
-                frame_data["cam_infos"][key] = value.cuda(non_blocking=True)
+                if value is not None:
+                    frame_data["cam_infos"][key] = value.cuda(non_blocking=True)
+                else:
+                    print(f"cam_infos value is None. key: {key}, value: {value}")
             for key, value in frame_data["image_infos"].items():
-                frame_data["image_infos"][key] = value.cuda(non_blocking=True)
-            
+                if value is not None:
+                    frame_data["image_infos"][key] = value.cuda(non_blocking=True)
+                else:
+                    print(f"image_infos value is None. key: {key}, value: {value}")            
             # Perform rendering
             outputs = trainer(
                 image_infos=frame_data["image_infos"],

@@ -439,13 +439,21 @@ class BasicTrainer(nn.Module):
                 return rendered_rgb, rendered_depth, alphas[..., None], info
         
         # render expand depth
+        expand_rgbs = None
         expand_depths = None
+        expand_opacities = None
         if cam.expand_camtoworlds is not None:
+            expand_rgbs = []
             expand_depths = []
+            expand_opacities = []
             for extand_ctow in cam.expand_camtoworlds:
-                _, expand_depth, _ = render_fn(return_info=False, ctow=extand_ctow, render_mode="ED")
+                expand_rgb, expand_depth, expand_opacity = render_fn(return_info=False, ctow=extand_ctow, render_mode="RGB+ED")
+                expand_rgbs.append(expand_rgb)
                 expand_depths.append(expand_depth)
+                expand_opacities.append(expand_opacity)
+            expand_rgbs = torch.stack(expand_rgbs, dim=0)
             expand_depths = torch.stack(expand_depths, dim=0)
+            expand_opacities = torch.stack(expand_opacities, dim=0)
 
         # render rgb and opacity
         rgb, depth, opacity, self.info = render_fn(return_info=True)
@@ -454,7 +462,9 @@ class BasicTrainer(nn.Module):
             "rgb_gaussians": rgb,
             "depth": depth, 
             "opacity": opacity,
-            "expand_depths": expand_depths
+            "expand_depths": expand_depths,
+            "expand_opacities": expand_opacities,
+            "expand_rgbs_gaussians": expand_rgbs
         }
         
         if self.training:
@@ -602,11 +612,12 @@ class BasicTrainer(nn.Module):
         if expand_depth is not None and outputs["expand_depths"] is not None:
             expand_depth_loss_sum = 0
             for i in range(outputs["expand_depths"].shape[0]):
-                gt_expand_depth = image_infos["lidar_expand_depth_maps"][i]
+                gt_expand_depth = image_infos["expand_lidar_depth_maps"][i]
                 lidar_hit_mask = (gt_expand_depth > 0).float() # no need to mask out the egocar region. it aready masked out in projection
                 pred_expand_depth = outputs["expand_depths"][i]
                 expand_depth_loss = self.depth_loss_fn(pred_expand_depth, gt_expand_depth, lidar_hit_mask)
                 expand_depth_loss_sum += expand_depth_loss * expand_depth.w
+                # print("check expand_depth_loss_sum grad. rquired: ", expand_depth_loss_sum.requires_grad, ", fn: ", expand_depth_loss_sum.grad_fn)
             if not torch.isnan(expand_depth_loss_sum).any():
                 loss_dict.update({"expand_depth_loss": expand_depth_loss_sum})
 

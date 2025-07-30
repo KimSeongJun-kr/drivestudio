@@ -270,6 +270,7 @@ render:
       - front_center_interp # type of trajectory for novel view synthesis
     fps: 24 # frames per second for novel view rendering
   vis_lidar: True # whether to visualize lidar points on ground truth images
+  vis_exp_lidar: True # whether to visualize lidar points on rendered images at expand pose
   vis_sky: True # whether to include "rgb_sky" and "rgb_sky_blend" in rendered keys
   vis_error: True # whether to include "rgb_error_map" in rendered keys
 

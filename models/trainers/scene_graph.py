@@ -261,7 +261,17 @@ class MultiTrainer(BasicTrainer):
             outputs["rgb"] = self.affine_transformation(
                 outputs["rgb_gaussians"], image_infos
             )
-        
+
+        outputs["expand_rgbs"] = None
+        if "expand_rgbs_gaussians" in outputs:
+            expand_rgbs = []
+            for i in range(outputs["expand_rgbs_gaussians"].shape[0]):
+                expand_rgb =self.affine_transformation(
+                    outputs["expand_rgbs_gaussians"][i] + outputs["rgb_sky"] * (1.0 - outputs["expand_opacities"][i]), image_infos
+                )
+                expand_rgbs.append(expand_rgb)
+            outputs["expand_rgbs"] = torch.stack(expand_rgbs, dim=0)
+
         if not self.training and self.render_each_class:
             with torch.no_grad():
                 for class_name in self.gaussian_classes.keys():
