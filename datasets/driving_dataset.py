@@ -666,6 +666,7 @@ class DrivingDataset(SceneDataset):
                     intrinsic_4x4 = torch.nn.functional.pad(
                         cam.intrinsics[frame_idx], (0, 1, 0, 1)
                     )
+
                 intrinsic_4x4[3, 3] = 1.0
                 lidar2img = intrinsic_4x4 @ cam.cam_to_worlds[frame_idx].inverse()
                 proj_lidar_points = (
@@ -679,33 +680,32 @@ class DrivingDataset(SceneDataset):
                     & (cam_points[:, 0] < cam.WIDTH)
                     & (cam_points[:, 1] >= 0)
                     & (cam_points[:, 1] < cam.HEIGHT)
-                    & (depth > 0)
+                    & (depth > 1.5)
                 ) # (num_pts, )
-                depth = depth[valid_mask]
-                _cam_points = cam_points[valid_mask]
+                filtered_depth = depth[valid_mask]
+                filtered_cam_points = cam_points[valid_mask]
 
                 # Apply egocar mask filtering
                 valid_mask_w_egocar_mask = valid_mask.clone()
                 if hasattr(cam, 'egocar_mask') and cam.egocar_mask is not None:
                     egocar_mask = cam.egocar_mask.bool() # (HEIGHT, WIDTH)
                     # Only check egocar mask for valid points
-                    valid_cam_points = cam_points[valid_mask]
-                    egocar_point_mask = egocar_mask[valid_cam_points[:, 1].long(), valid_cam_points[:, 0].long()]
+                    egocar_point_mask = egocar_mask[filtered_cam_points[:, 1].long(), filtered_cam_points[:, 0].long()]
                     
                     # Update final_valid_mask: remove points that are in egocar regions
                     valid_indices = torch.where(valid_mask)[0]
                     if egocar_point_mask.any():
                         valid_mask_w_egocar_mask[valid_indices[egocar_point_mask]] = False
-
-                # if frame_idx == len(cam) - 1:
-                #     print(f"[FRAME {frame_idx}] original depth shape: {depth.shape}, valid_mask sum: {valid_mask.sum()}, egocar_mask sum: {valid_mask_w_egocar_mask.sum()}, shape: {valid_mask_w_egocar_mask.shape}")
+                    valid_mask = valid_mask_w_egocar_mask
+                    filtered_depth = depth[valid_mask]
+                    filtered_cam_points = cam_points[valid_mask]
 
                 depth_map = torch.zeros(
                     cam.HEIGHT, cam.WIDTH
                 ).to(self.device)
                 depth_map[
-                    _cam_points[:, 1].long(), _cam_points[:, 0].long()
-                ] = depth.squeeze(-1)
+                    filtered_cam_points[:, 1].long(), filtered_cam_points[:, 0].long()
+                ] = filtered_depth.squeeze(-1)
                 lidar_depth_maps.append(depth_map)
                 
                 # used to filter out the lidar points that are visible from the camera
@@ -717,7 +717,7 @@ class DrivingDataset(SceneDataset):
                 
                 # attribute the color of the nearest pixel to the lidar point
                 points_color = cam.images[frame_idx][
-                    _cam_points[:, 1].long(), _cam_points[:, 0].long()
+                    filtered_cam_points[:, 1].long(), filtered_cam_points[:, 0].long()
                 ]
                 self.lidar_source.colors[visible_indices] = points_color
                 
@@ -740,20 +740,16 @@ class DrivingDataset(SceneDataset):
                             & (cam_points[:, 1] < cam.HEIGHT)
                             & (depth > 0)
                         ) # (num_pts, )
-                        expand_valid_mask = expand_valid_mask & valid_mask_w_egocar_mask
-                        depth = depth[expand_valid_mask]
-                        _cam_points = cam_points[expand_valid_mask]
+                        expand_valid_mask_w_egocar_mask = expand_valid_mask & valid_mask_w_egocar_mask
+                        filtered_depth = depth[expand_valid_mask_w_egocar_mask]
+                        filtered_cam_points = cam_points[expand_valid_mask_w_egocar_mask]
                         depth_map = torch.zeros(
                             cam.HEIGHT, cam.WIDTH
                         ).to(self.device)
                         depth_map[
-                            _cam_points[:, 1].long(), _cam_points[:, 0].long()
-                        ] = depth.squeeze(-1)
+                            filtered_cam_points[:, 1].long(), filtered_cam_points[:, 0].long()
+                        ] = filtered_depth.squeeze(-1)
                         expand_lidar_depth_maps.append(depth_map)
-                        # if frame_idx == len(cam) - 1:
-                        #     print(f"[FRAME {frame_idx}] expand depth shape: {depth.shape}, valid_mask sum: {expand_valid_mask.sum()}, egocar_mask sum: {valid_mask_w_egocar_mask.sum()}, shape: {valid_mask_w_egocar_mask.shape}")
-                            # print(f"cam.cam_to_worlds[frame_idx]: \n{cam.cam_to_worlds[frame_idx]}")
-                            # print(f"cam.expand_cam_to_worlds[frame_idx][i]: \n{cam.expand_cam_to_worlds[frame_idx][i]}")
 
                     expand_lidar_depth_maps = torch.stack(expand_lidar_depth_maps, dim=0).to(self.device).float()
                     expand_lidar_depth_maps_total.append(expand_lidar_depth_maps)

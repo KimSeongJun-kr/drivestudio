@@ -83,7 +83,7 @@ def setup(args):
     set_seeds(cfg.seed)
 
     global logger
-    setup_logging(output=log_dir, level=logging.INFO, time_string=current_time)
+    setup_logging(output=log_dir, level=logging.WARNING, time_string=current_time)
     logger.info("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     
     # save config
@@ -149,11 +149,11 @@ def main(args):
     render_keys = [
         "gt_rgbs",
         "rgbs",
-        "Background_rgbs",
-        "Dynamic_rgbs",
-        "RigidNodes_rgbs",
-        "DeformableNodes_rgbs",
-        "SMPLNodes_rgbs",
+        # "Background_rgbs",
+        # "Dynamic_rgbs",
+        # "RigidNodes_rgbs",
+        # "DeformableNodes_rgbs",
+        # "SMPLNodes_rgbs",
         "depths",
         # "Background_depths",
         # "Dynamic_depths",
@@ -165,7 +165,7 @@ def main(args):
     if cfg.render.vis_lidar:
         render_keys.insert(0, "lidar_on_images")
     if cfg.render.vis_exp_lidar:
-        render_keys.insert(0, "lidar_expand_on_dept")
+        render_keys.insert(0, "lidar_expand_on_depts")
         render_keys.insert(0, "lidar_expand_on_images")
         render_keys.insert(0, "expand_depths")
     if cfg.render.vis_sky:
