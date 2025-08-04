@@ -131,6 +131,12 @@ class CameraData(object):
         ]
         
         # Load the images, dynamic masks, sky masks, etc.
+        self.dynamic_masks = None
+        self.human_masks = None
+        self.vehicle_masks = None
+        self.sky_masks = None
+        self.egocar_mask = None
+        
         self.create_all_filelist()
         self.load_calibrations()
         self.load_images()
@@ -1007,11 +1013,29 @@ class ScenePixelSource(abc.ABC):
             Dynamic_opacities = []
             for img_idx, img_cam in enumerate(render_results["cam_names"]):
                 if img_cam == cam_name:
+                    # if self.data_cfg.only_dynamic:
+                    #     unique_cam_idx = img_idx % self.num_cams
+                    #     frame_idx = img_idx // self.num_cams
+                    #     dynamic_mask = self.camera_data[cam_id].dynamic_masks[frame_idx]
+                    #     gt_rgb = render_results["gt_rgbs"][img_idx]
+                    #     # Resize dynamic_mask to match gt_rgb size
+                    #     target_height, target_width = gt_rgb.shape[:2]
+                    #     dynamic_mask_resized = torch.nn.functional.interpolate(
+                    #         dynamic_mask.unsqueeze(0).unsqueeze(0),
+                    #         size=(target_height, target_width),
+                    #         mode="nearest"
+                    #     ).squeeze(0).squeeze(0)
+                    #     gt_rgbs.append(gt_rgb * dynamic_mask_resized[..., None].cpu().numpy())
+                    #     pred_rgbs.append(render_results["rgbs"][img_idx])
+                    # else:
+                    #     gt_rgbs.append(render_results["gt_rgbs"][img_idx])
+                    #     pred_rgbs.append(render_results["rgbs"][img_idx])
+
                     gt_rgbs.append(render_results["gt_rgbs"][img_idx])
                     pred_rgbs.append(render_results["rgbs"][img_idx])
                     if "Dynamic_opacities" in render_results:
                         Dynamic_opacities.append(render_results["Dynamic_opacities"][img_idx])
-            
+
             camera_results = {
                 "gt_rgbs": gt_rgbs,
                 "rgbs": pred_rgbs,

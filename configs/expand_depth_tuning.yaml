@@ -166,76 +166,76 @@ model:
       ins_translation:
         lr: 0.0005
         lr_final: 0.0001
-  # SMPLNodes: 
-  #   type: models.nodes.SMPLNodes
-  #   init:
-  #     only_moving: true
-  #     traj_length_thres: 0.5
-  #   reg:
-  #     sharp_shape_reg:
-  #       w: 1.
-  #       step_interval: 10
-  #       max_gauss_ratio: 10.
-  #     temporal_smooth_reg:
-  #       trans:
-  #         w: 0.01 # optimal value may vary
-  #         smooth_range: 5 # range of frames to consider for smoothing
-  #       # joint_smooth:
-  #       #   w: 0.01 # optimal value may vary
-  #     knn_reg:
-  #       # lambda_std_x: 0.0001
-  #       lambda_std_q: 0.001
-  #       lambda_std_s: 0.001
-  #       lambda_std_o: 0.001
-  #       lambda_std_shs_dc: 0.001
-  #       lambda_std_shs_rest: 0.001
-  #     max_s_square_reg:
-  #       w: 0.05
-  #     x_offset:
-  #       w: 0.2
-  #     voxel_deformer_reg:
-  #       lambda_std_w: 0.6
-  #       lambda_std_w_rest: 0.5
-  #       lambda_w_norm: 0.6
-  #       lambda_w_rest_norm: 0.3
-  #   optim:
-  #     xyz:
-  #       lr: 1.6e-04
-  #       lr_final: 1.6e-06
-  #       scale_factor: 3.0
-  #     rotation:
-  #       lr: 0.005
-  #     sh_dc:
-  #       lr: 0.005
-  #     sh_rest:
-  #       lr: 0.00025
-  #     ins_rotation:
-  #       lr: 0.00001
-  #       lr_final: 0.000005
-  #     ins_translation:
-  #       lr: 0.0005
-  #       lr_final: 0.0001
-  #     smpl_rotation:
-  #       lr: 0.00005
-  #       lr_final: 0.00001
-  #     w_dc_vox:
-  #       lr: 0.0001
-  #       lr_final: 0.00001
-  #       opt_after: 10000
-  #   ctrl:
-  #     sh_degree: 1
-  #     opacity_init_value: 0.99
-  #     ball_gaussians: false
-  #     constrain_xyz_offset: false
-  #     knn_update_interval: 100
-  #     knn_neighbors: 3
-  #     use_voxel_deformer: true
-  #     freeze_x: false
-  #     freeze_o: false
-  #     freeze_q: false
-  #     freeze_s: false
-  #     freeze_shs_dc: false
-  #     freeze_shs_rest: false
+  SMPLNodes: 
+    type: models.nodes.SMPLNodes
+    init:
+      only_moving: true
+      traj_length_thres: 0.5
+    reg:
+      sharp_shape_reg:
+        w: 1.
+        step_interval: 10
+        max_gauss_ratio: 10.
+      temporal_smooth_reg:
+        trans:
+          w: 0.01 # optimal value may vary
+          smooth_range: 5 # range of frames to consider for smoothing
+        # joint_smooth:
+        #   w: 0.01 # optimal value may vary
+      knn_reg:
+        # lambda_std_x: 0.0001
+        lambda_std_q: 0.001
+        lambda_std_s: 0.001
+        lambda_std_o: 0.001
+        lambda_std_shs_dc: 0.001
+        lambda_std_shs_rest: 0.001
+      max_s_square_reg:
+        w: 0.05
+      x_offset:
+        w: 0.2
+      voxel_deformer_reg:
+        lambda_std_w: 0.6
+        lambda_std_w_rest: 0.5
+        lambda_w_norm: 0.6
+        lambda_w_rest_norm: 0.3
+    optim:
+      xyz:
+        lr: 1.6e-04
+        lr_final: 1.6e-06
+        scale_factor: 3.0
+      rotation:
+        lr: 0.005
+      sh_dc:
+        lr: 0.005
+      sh_rest:
+        lr: 0.00025
+      ins_rotation:
+        lr: 0.00001
+        lr_final: 0.000005
+      ins_translation:
+        lr: 0.0005
+        lr_final: 0.0001
+      smpl_rotation:
+        lr: 0.00005
+        lr_final: 0.00001
+      w_dc_vox:
+        lr: 0.0001
+        lr_final: 0.00001
+        opt_after: 10000
+    ctrl:
+      sh_degree: 1
+      opacity_init_value: 0.99
+      ball_gaussians: false
+      constrain_xyz_offset: false
+      knn_update_interval: 100
+      knn_neighbors: 3
+      use_voxel_deformer: true
+      freeze_x: false
+      freeze_o: false
+      freeze_q: false
+      freeze_s: false
+      freeze_shs_dc: false
+      freeze_shs_rest: false
   Sky:
     type: models.modules.EnvLight
     params:

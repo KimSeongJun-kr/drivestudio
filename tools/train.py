@@ -83,7 +83,7 @@ def setup(args):
     set_seeds(cfg.seed)
 
     global logger
-    setup_logging(output=log_dir, level=logging.WARNING, time_string=current_time)
+    setup_logging(output=log_dir, level=logging.INFO, time_string=current_time)
     logger.info("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     
     # save config
@@ -512,7 +512,7 @@ if __name__ == "__main__":
     
     # wandb logging part
     parser.add_argument("--enable_wandb", action="store_true", help="enable wandb logging")
-    parser.add_argument("--entity", default="ziyc", type=str, help="wandb entity name")
+    parser.add_argument("--entity", default="starsixmoon-team", type=str, help="wandb entity name")
     parser.add_argument("--project", default="drivestudio", type=str, help="wandb project name, also used to enhance log_dir")
     parser.add_argument("--run_name", default="omnire", type=str, help="wandb run name, also used to enhance log_dir")
     

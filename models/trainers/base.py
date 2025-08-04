@@ -375,7 +375,11 @@ class BasicTrainer(nn.Module):
         
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
-            
+            # if v is not None and len(v) > 0:
+            #     gs_dict[k] = torch.cat(v, dim=0)
+            # else:
+            #     gs_dict[k] = None
+                
         # get the class labels
         self.pts_labels = gs_dict.pop("class_labels")
         if self.render_dynamic_mask:
@@ -577,6 +581,21 @@ class BasicTrainer(nn.Module):
         pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
         
         # rgb loss
+        # rgb_loss = self.losses_dict.get("rgb", None)
+        # if rgb_loss is not None and "rgb" in outputs and outputs["rgb"] is not None:
+        #     Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
+        #     if not torch.isnan(Ll1).any():
+        #         loss_dict.update({
+        #             "rgb_loss": self.losses_dict.rgb.w * Ll1,
+        #         })
+
+        # ssim_loss = self.losses_dict.get("ssim", None)
+        # if ssim_loss is not None and "rgb" in outputs and outputs["rgb"] is not None:
+        #     Lssim = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
+        #     if not torch.isnan(Lssim).any():
+        #         loss_dict.update({
+        #             "ssim_loss": self.losses_dict.ssim.w * Lssim,
+        #         })
         Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
         simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
         if not torch.isnan(Ll1).any() and not torch.isnan(simloss).any():
@@ -584,7 +603,7 @@ class BasicTrainer(nn.Module):
                 "rgb_loss": self.losses_dict.rgb.w * Ll1,
                 "ssim_loss": self.losses_dict.ssim.w * simloss,
             })
-        
+
         # mask loss
         if self.sky_opacity_loss_fn is not None:
             sky_loss_opacity = self.sky_opacity_loss_fn(pred_occupied_mask, gt_occupied_mask) * self.losses_dict.mask.w
@@ -657,22 +676,25 @@ class BasicTrainer(nn.Module):
                 })
 
         # dynamic region loss
-        dynamic_region_weighted_losses = self.losses_dict.get("dynamic_region", None)
-        if dynamic_region_weighted_losses is not None:
-            weight_factor = dynamic_region_weighted_losses.get("w", 1.0)
-            start_from = dynamic_region_weighted_losses.get("start_from", 0)
-            if self.step == start_from:
-                self.render_dynamic_mask = True
-            if self.step > start_from and "Dynamic_opacity" in outputs:
-                dynamic_pred_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
-                dynamic_pred_mask = dynamic_pred_mask & valid_loss_mask.bool()
+        # dynamic_region = self.losses_dict.get("dynamic_region", None)
+        # if dynamic_region is not None:
+        #     if self.step == dynamic_region.start_from:
+        #         self.render_dynamic_mask = True
+        #     if self.step > dynamic_region.start_from and "Dynamic_opacity" in outputs:
+        #         dynamic_pred_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
+        #         dynamic_pred_mask = dynamic_pred_mask & valid_loss_mask.bool()
                 
-                if dynamic_pred_mask.sum() > 0:
-                    Ll1 = torch.abs(gt_rgb[dynamic_pred_mask] - predicted_rgb[dynamic_pred_mask]).mean()
-                    if not torch.isnan(Ll1).any():
-                        loss_dict.update({
-                            "vehicle_region_rgb_loss": weight_factor * Ll1,
-                        })
+        #         if dynamic_pred_mask.sum() > 0:
+        #             dynamic_gt_rgb = gt_rgb * image_infos["dynamic_masks"][..., None]
+        #             dynamic_pred_rgb = predicted_rgb * dynamic_pred_mask[..., None]
+
+        #             Ll1 = torch.abs(dynamic_gt_rgb - dynamic_pred_rgb).mean()
+        #             Lssim = 1 - self.ssim(dynamic_gt_rgb.permute(2, 0, 1)[None, ...], dynamic_pred_rgb.permute(2, 0, 1)[None, ...])
+        #             if not torch.isnan(Ll1).any():
+        #                 loss_dict.update({
+        #                     "vehicle_region_rgb_loss": dynamic_region.rgb_w * Ll1,
+        #                     "vehicle_region_ssim_loss": dynamic_region.ssim_w * Lssim,
+        #                 })
             
         # compute gaussian reg loss
         for class_name in self.gaussian_classes.keys():
@@ -799,11 +821,13 @@ class BasicTrainer(nn.Module):
         cam = dataclass_camera(
             camtoworlds=c2w,
             camtoworlds_gt=c2w,
+            expand_camtoworlds=None,
+            expand_camtoworlds_gt=None,
             Ks=K,
             H=H,
             W=W
         )
-        
+
         gs_dict = {
             "_means": [],
             "_scales": [],
@@ -817,11 +841,15 @@ class BasicTrainer(nn.Module):
                 if gs is None:
                     continue
 
-            for k, _ in gs.items():
-                gs_dict[k].append(gs[k])
+                for k, _ in gs.items():
+                    gs_dict[k].append(gs[k])
         
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
+            # if v is not None and len(v) > 0:
+            #     gs_dict[k] = torch.cat(v, dim=0)
+            # else:
+            #     gs_dict[k] = None
 
         gs = dataclass_gs(
             _means=gs_dict["_means"],

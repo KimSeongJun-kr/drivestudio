@@ -266,9 +266,14 @@ class MultiTrainer(BasicTrainer):
         if "expand_rgbs_gaussians" in outputs and outputs["expand_rgbs_gaussians"] is not None:
             expand_rgbs = []
             for i in range(outputs["expand_rgbs_gaussians"].shape[0]):
-                expand_rgb =self.affine_transformation(
-                    outputs["expand_rgbs_gaussians"][i] + outputs["rgb_sky"] * (1.0 - outputs["expand_opacities"][i]), image_infos
-                )
+                if "Sky" in self.models:
+                    expand_rgb =self.affine_transformation(
+                        outputs["expand_rgbs_gaussians"][i] + outputs["rgb_sky"] * (1.0 - outputs["expand_opacities"][i]), image_infos
+                    )
+                else:
+                    expand_rgb =self.affine_transformation(
+                        outputs["expand_rgbs_gaussians"][i], image_infos
+                    )
                 expand_rgbs.append(expand_rgb)
             outputs["expand_rgbs"] = torch.stack(expand_rgbs, dim=0)
 
@@ -281,17 +286,17 @@ class MultiTrainer(BasicTrainer):
         #             outputs[class_name+"_opacity"] = sep_opacity
         #             outputs[class_name+"_depth"] = sep_depth
 
-        # if not self.training or self.render_dynamic_mask:
-        #     with torch.no_grad():
-        #         if "Background" in self.gaussian_classes:
-        #             gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
-        #         else:
-        #             gaussian_mask = self.pts_labels != -1
+        if not self.training or self.render_dynamic_mask:
+            with torch.no_grad():
+                if "Background" in self.gaussian_classes:
+                    gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
+                else:
+                    gaussian_mask = self.pts_labels != -1
 
-        #         sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
-        #         outputs["Dynamic_rgb"] = self.affine_transformation(sep_rgb, image_infos)
-        #         outputs["Dynamic_opacity"] = sep_opacity
-        #         outputs["Dynamic_depth"] = sep_depth
+                sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
+                outputs["Dynamic_rgb"] = self.affine_transformation(sep_rgb, image_infos)
+                outputs["Dynamic_opacity"] = sep_opacity
+                outputs["Dynamic_depth"] = sep_depth
         
         return outputs
 
