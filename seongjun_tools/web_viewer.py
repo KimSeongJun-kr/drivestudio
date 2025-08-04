@@ -26,9 +26,13 @@ class viewer_trainer(BasicTrainer):
     def __init__(
         self,
         num_timesteps: int,
+        image_height: int = 900,
+        image_width: int = 1600,
         **kwargs
     ):
         self.num_timesteps = num_timesteps
+        self.image_height = image_height
+        self.image_width = image_width
         super().__init__(**kwargs)
         self.curr_frame = 0
         self.models = {}
@@ -168,7 +172,7 @@ class viewer_trainer(BasicTrainer):
         self.load_state_dict(state_dict, load_only_model=True, strict=True)
 
     def update_viewer(self):
-        num_train_rays_per_step = self.render_cfg.batch_size * 1600 * 900
+        num_train_rays_per_step = self.render_cfg.batch_size * self.image_width * self.image_height
         self.viewer.lock.release()
         num_train_steps_per_sec = 1.0 / (time.time() - self.tic)
         num_train_rays_per_sec = (
@@ -200,6 +204,29 @@ def force_redraw_heartbeat(get_clients, hz=10, eps=1e-3):
                 pass
         time.sleep(1.0 / hz)
 
+def extract_params_from_checkpoint(ckpt_path):
+    """체크포인트에서 필요한 파라미터들을 추출합니다."""
+    state_dict = torch.load(ckpt_path, map_location='cpu')
+    
+    # timesteps 추출 (RigidNodes의 instances_quats 첫 번째 차원)
+    num_timesteps = 196  # 기본값
+    if 'models/RigidNodes/instances_quats' in state_dict:
+        num_timesteps = state_dict['models/RigidNodes/instances_quats'].shape[0]
+    elif 'models/DeformableNodes/instances_quats' in state_dict:
+        num_timesteps = state_dict['models/DeformableNodes/instances_quats'].shape[0]
+    elif 'models/SMPLNodes/instances_quats' in state_dict:
+        num_timesteps = state_dict['models/SMPLNodes/instances_quats'].shape[0]
+    
+    # 이미지 수 추출 (CamPose의 embeds.weight 첫 번째 차원)
+    num_images = 1176  # 기본값
+    if 'models/CamPose/embeds.weight' in state_dict:
+        num_images = state_dict['models/CamPose/embeds.weight'].shape[0]
+    
+    # scene_aabb는 체크포인트에서 직접 추출하기 어려우므로 기본값 사용
+    scene_aabb = torch.tensor([[-100, -100, -100], [100, 100, 100]])
+    
+    return num_timesteps, num_images, scene_aabb
+
 def setup(args):
     # get config
     cfg = OmegaConf.load(args.config_file)
@@ -225,7 +252,8 @@ if __name__ == "__main__":
                         # default="/workspace/drivestudio/output/box_experiments_0803/iter_50k_try0/checkpoint_50000_final.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0803/iter_600k_try0/checkpoint_100000.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try1_ex10_w1/checkpoint_100000.pth"
-                        default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try0/checkpoint_200000.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try0/checkpoint_200000.pth"
+                        default="/workspace/drivestudio/output/feasibility_check_0618/run_updated_scene_1_date_0529_try_1/checkpoint_30000_final.pth"
     )
     parser.add_argument("--config_file", help="path to config file", type=str, 
                         default="/workspace/drivestudio/configs/experiments/0803/iter_50k_try1_ex10_w1.yaml")
@@ -236,18 +264,27 @@ if __name__ == "__main__":
     cfg = setup(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # 체크포인트에서 파라미터 추출
+    num_timesteps, num_images, scene_aabb = extract_params_from_checkpoint(args.ckpt_path)
+
+    # 이미지 해상도 추출 (설정 파일에서 또는 기본값 사용)
+    image_height = cfg.data.get('load_size', [900, 1600])[0] if 'data' in cfg and 'load_size' in cfg.data else 900
+    image_width = cfg.data.get('load_size', [900, 1600])[1] if 'data' in cfg and 'load_size' in cfg.data else 1600
+
     # build dataset
     # dataset = DrivingDataset(data_cfg=cfg.data)
 
     # setup trainer
     trainer = viewer_trainer(
         **cfg.trainer,
-        num_timesteps=196,
+        num_timesteps=num_timesteps,
         model_config=cfg.model,
-        num_train_images=1176,
-        num_full_images=1176,
+        num_train_images=num_images,
+        num_full_images=num_images,
         test_set_indices=[],
-        scene_aabb=torch.tensor([[-100, -100, -100], [100, 100, 100]]),
+        scene_aabb=scene_aabb,
+        image_height=image_height,
+        image_width=image_width,
         device=device
     )
     # trainer = viewer_trainer()
