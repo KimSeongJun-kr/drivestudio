@@ -34,7 +34,7 @@ class viewer_trainer(BasicTrainer):
         self.image_height = image_height
         self.image_width = image_width
         super().__init__(**kwargs)
-        self.curr_frame = 0
+        self.vis_curr_frame = 0
         self.models = {}
         self.gaussian_classes = {}
         self._init_models()
@@ -88,18 +88,27 @@ class viewer_trainer(BasicTrainer):
                 model.register_normalized_timestamps(self.normalized_timestamps)
             if hasattr(model, 'set_bbox'):
                 model.set_bbox(self.aabb)
-    
+
+    def init_viewer(self, port: int = 8080):
+        # a simple viewer for background ONLY visualization
+        self.server = viser.ViserServer(port=port, verbose=False)
+        self.viewer = nerfview.Viewer(
+            server=self.server,
+            render_fn=self._viewer_render_fn,
+            mode="rendering",
+        )
+
     @torch.no_grad()
     def _viewer_render_fn(
-        self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        self, camera_state: nerfview.CameraState, tab_state: nerfview.RenderTabState
     ):
         """Callable function for the viewer."""
-        W, H = img_wh
+        W, H = tab_state.viewer_width, tab_state.viewer_height
         c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
+        K = camera_state.get_K([W, H])
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
-        
+
         cam = dataclass_camera(
             camtoworlds=c2w,
             camtoworlds_gt=c2w,
@@ -120,10 +129,7 @@ class viewer_trainer(BasicTrainer):
         for class_name in self.gaussian_classes.keys():
             if class_name in self.models and self.models[class_name] is not None:
                 if class_name != "Background":
-                    self.models[class_name].set_cur_frame(self.curr_frame)
-                self.curr_frame += 1
-                if self.curr_frame == self.num_timesteps - 1:
-                    self.curr_frame = 0
+                    self.models[class_name].set_cur_frame(self.vis_curr_frame)
 
                 gs = self.models[class_name].get_gaussians(cam)
                 if gs is None:
@@ -181,7 +187,7 @@ class viewer_trainer(BasicTrainer):
         # Update the viewer state.
         self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
         # Update the scene.
-        self.viewer.update(self.curr_frame, num_train_rays_per_step)
+        self.viewer.update(self.vis_curr_frame, num_train_rays_per_step)
 
         if self.viewer is not None:
             while self.viewer.state.status == "paused":
@@ -221,6 +227,8 @@ def extract_params_from_checkpoint(ckpt_path):
     num_images = 1176  # 기본값
     if 'models/CamPose/embeds.weight' in state_dict:
         num_images = state_dict['models/CamPose/embeds.weight'].shape[0]
+    else:
+        num_images = num_timesteps * 6
     
     # scene_aabb는 체크포인트에서 직접 추출하기 어려우므로 기본값 사용
     scene_aabb = torch.tensor([[-100, -100, -100], [100, 100, 100]])
@@ -253,17 +261,21 @@ if __name__ == "__main__":
                         # default="/workspace/drivestudio/output/box_experiments_0803/iter_600k_try0/checkpoint_100000.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try1_ex10_w1/checkpoint_100000.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try0/checkpoint_200000.pth"
-                        default="/workspace/drivestudio/output/feasibility_check_0618/run_updated_scene_1_date_0529_try_1/checkpoint_30000_final.pth"
+                        # default="/workspace/drivestudio/output/feasibility_check_0618/run_updated_scene_1_date_0529_try_1/checkpoint_30000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try1_ex10_w1/checkpoint_50000_final.pth"
+                        default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
     )
     parser.add_argument("--config_file", help="path to config file", type=str, 
-                        default="/workspace/drivestudio/configs/experiments/0803/iter_50k_try1_ex10_w1.yaml")
+                        default="/workspace/drivestudio/configs/experiments/0804/iter_50k_try3_ex1_w10_nd.yaml")
     parser.add_argument("--dataset", type=str, default="nuscenes/6cams_viewer")
     
     args = parser.parse_args()
 
     cfg = setup(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    torch.cuda.init()
+    _ = torch.empty(1, device=device)
+    
     # 체크포인트에서 파라미터 추출
     num_timesteps, num_images, scene_aabb = extract_params_from_checkpoint(args.ckpt_path)
 
@@ -291,7 +303,6 @@ if __name__ == "__main__":
 
     trainer.load_checkpoint(args.ckpt_path)
     trainer.init_viewer()
-    trainer.viewer.lock.acquire()
 
     # init_viewer 내부에서 만든 viser 서버 핸들을 꺼내옵니다.
     server = trainer.viewer.server  # nerfview.Viewer(server=...)로 생성된 viser 서버
@@ -307,8 +318,10 @@ if __name__ == "__main__":
         daemon=True,
     ).start()
 
+    # trainer.viewer.lock.acquire()
     while True:
-        trainer.update_viewer()
-        time.sleep(0.1)
+        # trainer.update_viewer()
+        trainer.vis_curr_frame = (trainer.vis_curr_frame + 1) % trainer.num_timesteps
+        time.sleep(0.05)
 
     
