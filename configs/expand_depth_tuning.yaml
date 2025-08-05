@@ -31,6 +31,9 @@ trainer:
       loss_type: l1 # choose from ["l1", "l2"]
     expand_depth:
       w: 0.01
+      inverse_depth: False # whether to use inverse depth, NOTE that when set to True, must normalize=True
+      normalize: False # whether to normalize depth loss
+      loss_type: l1 # choose from ["l1", "l2"]
     affine:
       w: 0.00001 # weight of affine regularization
   res_schedule:
@@ -79,6 +82,8 @@ model:
         return_color: True
       near_randoms: 100_000
       far_randoms: 100_000
+    ctrl:
+      cull_inside_of_instance_box: True
     reg:
       sharp_shape_reg:
         w: 1.

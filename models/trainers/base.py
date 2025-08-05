@@ -124,6 +124,7 @@ class BasicTrainer(nn.Module):
         
         # a simple viewer for background visualization
         self.viewer = None
+        self.vis_curr_frame = 0
     
     @property
     def in_test_set(self):
@@ -240,6 +241,8 @@ class BasicTrainer(nn.Module):
         
         depth_loss_fn = None
         depth_loss_cfg = self.losses_dict.get("depth", None)
+        expand_depth_loss_fn = None
+        expand_depth_loss_cfg = self.losses_dict.get("expand_depth", None)
         if depth_loss_cfg is not None:
             from models.losses import DepthLoss
             depth_loss_fn = DepthLoss(
@@ -247,7 +250,15 @@ class BasicTrainer(nn.Module):
                 normalize=depth_loss_cfg.normalize,
                 use_inverse_depth=depth_loss_cfg.inverse_depth,
             )
+        if expand_depth_loss_cfg is not None:
+            from models.losses import DepthLoss
+            expand_depth_loss_fn = DepthLoss(
+                loss_type=expand_depth_loss_cfg.loss_type,
+                normalize=expand_depth_loss_cfg.normalize,
+                use_inverse_depth=expand_depth_loss_cfg.inverse_depth,
+            )
         self.depth_loss_fn = depth_loss_fn
+        self.expand_depth_loss_fn = expand_depth_loss_fn
     
     def optimizer_zero_grad(self) -> None:
         self.optimizer.zero_grad()
@@ -288,13 +299,25 @@ class BasicTrainer(nn.Module):
         for class_name in self.gaussian_classes.keys():
             gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
             
-            self.models[class_name].postprocess_per_train_step(
-                step=step,
-                optimizer=self.optimizer,
-                radii=radii[0, gaussian_mask],
-                xys_grad=grads[0, gaussian_mask],
-                last_size=max(self.info["width"], self.info["height"])
-            )
+            if class_name == "Background":
+                self.models[class_name].postprocess_per_train_step(
+                    step=step,
+                    optimizer=self.optimizer,
+                    radii=radii[0, gaussian_mask],
+                    xys_grad=grads[0, gaussian_mask],
+                    last_size=max(self.info["width"], self.info["height"]),
+                    instance_trans=self.models["RigidNodes"].instances_trans[self.cur_frame],
+                    instance_quats=self.models["RigidNodes"].instances_quats[self.cur_frame],
+                    instance_size=self.models["RigidNodes"].instances_size,
+                )
+            else:
+                self.models[class_name].postprocess_per_train_step(
+                    step=step,
+                    optimizer=self.optimizer,
+                    radii=radii[0, gaussian_mask],
+                    xys_grad=grads[0, gaussian_mask],
+                    last_size=max(self.info["width"], self.info["height"])
+                )
         
         # viewer
         if self.viewer is not None:
@@ -611,7 +634,8 @@ class BasicTrainer(nn.Module):
                 loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
         
         # depth loss
-        if self.depth_loss_fn is not None:
+        depth = self.losses_dict.get("depth", None)
+        if depth is not None:
             gt_depth = image_infos["lidar_depth_map"] 
             lidar_hit_mask = (gt_depth > 0).float() * valid_loss_mask
             pred_depth = outputs["depth"]
@@ -634,7 +658,7 @@ class BasicTrainer(nn.Module):
                 gt_expand_depth = image_infos["expand_lidar_depth_maps"][i]
                 lidar_hit_mask = (gt_expand_depth > 0).float() # no need to mask out the egocar region. it aready masked out in projection
                 pred_expand_depth = outputs["expand_depths"][i]
-                expand_depth_loss = self.depth_loss_fn(pred_expand_depth, gt_expand_depth, lidar_hit_mask)
+                expand_depth_loss = self.expand_depth_loss_fn(pred_expand_depth, gt_expand_depth, lidar_hit_mask)
                 expand_depth_loss_sum += expand_depth_loss * expand_depth.w
                 # print("check expand_depth_loss_sum grad. rquired: ", expand_depth_loss_sum.requires_grad, ", fn: ", expand_depth_loss_sum.grad_fn)
             if not torch.isnan(expand_depth_loss_sum).any():
@@ -835,15 +859,29 @@ class BasicTrainer(nn.Module):
             "_rgbs": [],
             "_opacities": [],
         }
-        for class_name in ["Background"]:
-            if class_name in self.gaussian_classes:
+        for class_name in self.gaussian_classes.keys():
+            if class_name in self.models and self.models[class_name] is not None:
+                if class_name != "Background":
+                    self.models[class_name].set_cur_frame(self.vis_curr_frame)
+                self.vis_curr_frame += 1
+                if self.vis_curr_frame == self.num_timesteps - 1:
+                    self.vis_curr_frame = 0
+
                 gs = self.models[class_name].get_gaussians(cam)
                 if gs is None:
                     continue
 
                 for k, _ in gs.items():
                     gs_dict[k].append(gs[k])
-        
+        # for class_name in ["Background"]:
+        #     if class_name in self.gaussian_classes:
+        #         gs = self.models[class_name].get_gaussians(cam)
+        #         if gs is None:
+        #             continue
+
+        #         for k, _ in gs.items():
+        #             gs_dict[k].append(gs[k])
+
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
             # if v is not None and len(v) > 0:
