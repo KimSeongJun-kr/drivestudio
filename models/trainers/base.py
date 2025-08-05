@@ -124,6 +124,7 @@ class BasicTrainer(nn.Module):
         
         # a simple viewer for background visualization
         self.viewer = None
+        self.vis_curr_frame = 0
     
     @property
     def in_test_set(self):
@@ -240,6 +241,8 @@ class BasicTrainer(nn.Module):
         
         depth_loss_fn = None
         depth_loss_cfg = self.losses_dict.get("depth", None)
+        expand_depth_loss_fn = None
+        expand_depth_loss_cfg = self.losses_dict.get("expand_depth", None)
         if depth_loss_cfg is not None:
             from models.losses import DepthLoss
             depth_loss_fn = DepthLoss(
@@ -247,7 +250,15 @@ class BasicTrainer(nn.Module):
                 normalize=depth_loss_cfg.normalize,
                 use_inverse_depth=depth_loss_cfg.inverse_depth,
             )
+        if expand_depth_loss_cfg is not None:
+            from models.losses import DepthLoss
+            expand_depth_loss_fn = DepthLoss(
+                loss_type=expand_depth_loss_cfg.loss_type,
+                normalize=expand_depth_loss_cfg.normalize,
+                use_inverse_depth=expand_depth_loss_cfg.inverse_depth,
+            )
         self.depth_loss_fn = depth_loss_fn
+        self.expand_depth_loss_fn = expand_depth_loss_fn
     
     def optimizer_zero_grad(self) -> None:
         self.optimizer.zero_grad()
@@ -288,13 +299,25 @@ class BasicTrainer(nn.Module):
         for class_name in self.gaussian_classes.keys():
             gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
             
-            self.models[class_name].postprocess_per_train_step(
-                step=step,
-                optimizer=self.optimizer,
-                radii=radii[0, gaussian_mask],
-                xys_grad=grads[0, gaussian_mask],
-                last_size=max(self.info["width"], self.info["height"])
-            )
+            if class_name == "Background":
+                self.models[class_name].postprocess_per_train_step(
+                    step=step,
+                    optimizer=self.optimizer,
+                    radii=radii[0, gaussian_mask],
+                    xys_grad=grads[0, gaussian_mask],
+                    last_size=max(self.info["width"], self.info["height"]),
+                    instance_trans=self.models["RigidNodes"].instances_trans[self.cur_frame],
+                    instance_quats=self.models["RigidNodes"].instances_quats[self.cur_frame],
+                    instance_size=self.models["RigidNodes"].instances_size,
+                )
+            else:
+                self.models[class_name].postprocess_per_train_step(
+                    step=step,
+                    optimizer=self.optimizer,
+                    radii=radii[0, gaussian_mask],
+                    xys_grad=grads[0, gaussian_mask],
+                    last_size=max(self.info["width"], self.info["height"])
+                )
         
         # viewer
         if self.viewer is not None:
@@ -328,10 +351,21 @@ class BasicTrainer(nn.Module):
         if "CamPose" in self.models.keys() and not novel_view:
             camtoworlds = self.models["CamPose"](camtoworlds, image_ids)
         
+        # Compute the expand camera poses        
+        expand_camtoworlds = expand_camtoworlds_gt = None
+        if "expand_camera_to_worlds" in camera_infos and camera_infos["expand_camera_to_worlds"] is not None:
+            expand_camtoworlds_gt = camera_infos["expand_camera_to_worlds"]
+            expand_camtoworlds = torch.zeros_like(expand_camtoworlds_gt)
+            for i in range(expand_camtoworlds_gt.shape[0]):
+                exp_cam_to_ori_cam = torch.matmul(camtoworlds_gt.inverse(), expand_camtoworlds_gt[i])
+                expand_camtoworlds[i] = torch.matmul(camtoworlds, exp_cam_to_ori_cam)
+
         # collect camera information
         camera_dict = dataclass_camera(
             camtoworlds=camtoworlds,
             camtoworlds_gt=camtoworlds_gt,
+            expand_camtoworlds=expand_camtoworlds,
+            expand_camtoworlds_gt=expand_camtoworlds_gt,
             Ks=camera_infos["intrinsics"],
             H=camera_infos["height"],
             W=camera_infos["width"]
@@ -364,7 +398,11 @@ class BasicTrainer(nn.Module):
         
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
-            
+            # if v is not None and len(v) > 0:
+            #     gs_dict[k] = torch.cat(v, dim=0)
+            # else:
+            #     gs_dict[k] = None
+                
         # get the class labels
         self.pts_labels = gs_dict.pop("class_labels")
         if self.render_dynamic_mask:
@@ -389,14 +427,14 @@ class BasicTrainer(nn.Module):
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
     
-        def render_fn(opaticy_mask=None, return_info=False):
+        def render_fn(opaticy_mask=None, return_info=False, ctow=cam.camtoworlds, render_mode="RGB+ED"):
             renders, alphas, info = rasterization(
                 means=gs.means,
                 quats=gs.quats,
                 scales=gs.scales,
                 opacities=gs.opacities.squeeze()*opaticy_mask if opaticy_mask is not None else gs.opacities.squeeze(),
                 colors=gs.rgbs,
-                viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
+                viewmats=torch.linalg.inv(ctow)[None, ...],  # [C, 4, 4]
                 Ks=cam.Ks[None, ...],  # [C, 3, 3]
                 width=cam.W,
                 height=cam.H,
@@ -404,26 +442,56 @@ class BasicTrainer(nn.Module):
                 absgrad=self.render_cfg.absgrad,
                 sparse_grad=self.render_cfg.sparse_grad,
                 rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
+                render_mode=render_mode,
                 **kwargs,
             )
             renders = renders[0]
             alphas = alphas[0].squeeze(-1)
             assert self.render_cfg.batch_size == 1, "batch size must be 1, will support batch size > 1 in the future"
-            
-            assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
-            rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+
+            if render_mode == "RGB+ED":
+                assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
+                rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+                rendered_rgb = torch.clamp(rendered_rgb, max=1.0)
+            elif render_mode == "D" or render_mode == "ED":
+                assert renders.shape[-1] == 1, f"Must render depth and alpha"
+                rendered_rgb = None
+                rendered_depth = renders
+            else:
+                raise ValueError(f"Invalid render mode: {render_mode}")
             
             if not return_info:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None]
+                return rendered_rgb, rendered_depth, alphas[..., None]
             else:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], info
+                return rendered_rgb, rendered_depth, alphas[..., None], info
         
+        # render expand depth
+        expand_rgbs = None
+        expand_depths = None
+        expand_opacities = None
+        if cam.expand_camtoworlds is not None:
+            expand_rgbs = []
+            expand_depths = []
+            expand_opacities = []
+            for extand_ctow in cam.expand_camtoworlds:
+                expand_rgb, expand_depth, expand_opacity = render_fn(return_info=False, ctow=extand_ctow, render_mode="RGB+ED")
+                expand_rgbs.append(expand_rgb)
+                expand_depths.append(expand_depth)
+                expand_opacities.append(expand_opacity)
+            expand_rgbs = torch.stack(expand_rgbs, dim=0)
+            expand_depths = torch.stack(expand_depths, dim=0)
+            expand_opacities = torch.stack(expand_opacities, dim=0)
+
         # render rgb and opacity
         rgb, depth, opacity, self.info = render_fn(return_info=True)
+
         results = {
             "rgb_gaussians": rgb,
             "depth": depth, 
-            "opacity": opacity
+            "opacity": opacity,
+            "expand_depths": expand_depths,
+            "expand_opacities": expand_opacities,
+            "expand_rgbs_gaussians": expand_rgbs
         }
         
         if self.training:
@@ -483,7 +551,6 @@ class BasicTrainer(nn.Module):
             cam=processed_cam,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
-            render_mode="RGB+ED",
             radius_clip=self.render_cfg.get('radius_clip', 0.)
         )
         
@@ -537,6 +604,21 @@ class BasicTrainer(nn.Module):
         pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
         
         # rgb loss
+        # rgb_loss = self.losses_dict.get("rgb", None)
+        # if rgb_loss is not None and "rgb" in outputs and outputs["rgb"] is not None:
+        #     Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
+        #     if not torch.isnan(Ll1).any():
+        #         loss_dict.update({
+        #             "rgb_loss": self.losses_dict.rgb.w * Ll1,
+        #         })
+
+        # ssim_loss = self.losses_dict.get("ssim", None)
+        # if ssim_loss is not None and "rgb" in outputs and outputs["rgb"] is not None:
+        #     Lssim = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
+        #     if not torch.isnan(Lssim).any():
+        #         loss_dict.update({
+        #             "ssim_loss": self.losses_dict.ssim.w * Lssim,
+        #         })
         Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
         simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
         if not torch.isnan(Ll1).any() and not torch.isnan(simloss).any():
@@ -544,7 +626,7 @@ class BasicTrainer(nn.Module):
                 "rgb_loss": self.losses_dict.rgb.w * Ll1,
                 "ssim_loss": self.losses_dict.ssim.w * simloss,
             })
-        
+
         # mask loss
         if self.sky_opacity_loss_fn is not None:
             sky_loss_opacity = self.sky_opacity_loss_fn(pred_occupied_mask, gt_occupied_mask) * self.losses_dict.mask.w
@@ -552,7 +634,8 @@ class BasicTrainer(nn.Module):
                 loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
         
         # depth loss
-        if self.depth_loss_fn is not None:
+        depth = self.losses_dict.get("depth", None)
+        if depth is not None:
             gt_depth = image_infos["lidar_depth_map"] 
             lidar_hit_mask = (gt_depth > 0).float() * valid_loss_mask
             pred_depth = outputs["depth"]
@@ -566,7 +649,21 @@ class BasicTrainer(nn.Module):
             depth_loss = depth_loss * self.losses_dict.depth.w * decay_weight
             if not torch.isnan(depth_loss).any():
                 loss_dict.update({"depth_loss": depth_loss})
-            
+
+        # expand depth loss
+        expand_depth = self.losses_dict.get("expand_depth", None)
+        if expand_depth is not None and "expand_depths" in outputs and outputs["expand_depths"] is not None:
+            expand_depth_loss_sum = 0
+            for i in range(outputs["expand_depths"].shape[0]):
+                gt_expand_depth = image_infos["expand_lidar_depth_maps"][i]
+                lidar_hit_mask = (gt_expand_depth > 0).float() # no need to mask out the egocar region. it aready masked out in projection
+                pred_expand_depth = outputs["expand_depths"][i]
+                expand_depth_loss = self.expand_depth_loss_fn(pred_expand_depth, gt_expand_depth, lidar_hit_mask)
+                expand_depth_loss_sum += expand_depth_loss * expand_depth.w
+                # print("check expand_depth_loss_sum grad. rquired: ", expand_depth_loss_sum.requires_grad, ", fn: ", expand_depth_loss_sum.grad_fn)
+            if not torch.isnan(expand_depth_loss_sum).any():
+                loss_dict.update({"expand_depth_loss": expand_depth_loss_sum})
+
         # ----- reg loss -----
         opacity_entropy_reg = self.losses_dict.get("opacity_entropy", None)
         if opacity_entropy_reg is not None:
@@ -603,22 +700,25 @@ class BasicTrainer(nn.Module):
                 })
 
         # dynamic region loss
-        dynamic_region_weighted_losses = self.losses_dict.get("dynamic_region", None)
-        if dynamic_region_weighted_losses is not None:
-            weight_factor = dynamic_region_weighted_losses.get("w", 1.0)
-            start_from = dynamic_region_weighted_losses.get("start_from", 0)
-            if self.step == start_from:
-                self.render_dynamic_mask = True
-            if self.step > start_from and "Dynamic_opacity" in outputs:
-                dynamic_pred_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
-                dynamic_pred_mask = dynamic_pred_mask & valid_loss_mask.bool()
+        # dynamic_region = self.losses_dict.get("dynamic_region", None)
+        # if dynamic_region is not None:
+        #     if self.step == dynamic_region.start_from:
+        #         self.render_dynamic_mask = True
+        #     if self.step > dynamic_region.start_from and "Dynamic_opacity" in outputs:
+        #         dynamic_pred_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
+        #         dynamic_pred_mask = dynamic_pred_mask & valid_loss_mask.bool()
                 
-                if dynamic_pred_mask.sum() > 0:
-                    Ll1 = torch.abs(gt_rgb[dynamic_pred_mask] - predicted_rgb[dynamic_pred_mask]).mean()
-                    if not torch.isnan(Ll1).any():
-                        loss_dict.update({
-                            "vehicle_region_rgb_loss": weight_factor * Ll1,
-                        })
+        #         if dynamic_pred_mask.sum() > 0:
+        #             dynamic_gt_rgb = gt_rgb * image_infos["dynamic_masks"][..., None]
+        #             dynamic_pred_rgb = predicted_rgb * dynamic_pred_mask[..., None]
+
+        #             Ll1 = torch.abs(dynamic_gt_rgb - dynamic_pred_rgb).mean()
+        #             Lssim = 1 - self.ssim(dynamic_gt_rgb.permute(2, 0, 1)[None, ...], dynamic_pred_rgb.permute(2, 0, 1)[None, ...])
+        #             if not torch.isnan(Ll1).any():
+        #                 loss_dict.update({
+        #                     "vehicle_region_rgb_loss": dynamic_region.rgb_w * Ll1,
+        #                     "vehicle_region_ssim_loss": dynamic_region.ssim_w * Lssim,
+        #                 })
             
         # compute gaussian reg loss
         for class_name in self.gaussian_classes.keys():
@@ -745,11 +845,13 @@ class BasicTrainer(nn.Module):
         cam = dataclass_camera(
             camtoworlds=c2w,
             camtoworlds_gt=c2w,
+            expand_camtoworlds=None,
+            expand_camtoworlds_gt=None,
             Ks=K,
             H=H,
             W=W
         )
-        
+
         gs_dict = {
             "_means": [],
             "_scales": [],
@@ -757,17 +859,35 @@ class BasicTrainer(nn.Module):
             "_rgbs": [],
             "_opacities": [],
         }
-        for class_name in ["Background"]:
-            if class_name in self.gaussian_classes:
+        for class_name in self.gaussian_classes.keys():
+            if class_name in self.models and self.models[class_name] is not None:
+                if class_name != "Background":
+                    self.models[class_name].set_cur_frame(self.vis_curr_frame)
+                self.vis_curr_frame += 1
+                if self.vis_curr_frame == self.num_timesteps - 1:
+                    self.vis_curr_frame = 0
+
                 gs = self.models[class_name].get_gaussians(cam)
                 if gs is None:
                     continue
 
-            for k, _ in gs.items():
-                gs_dict[k].append(gs[k])
-        
+                for k, _ in gs.items():
+                    gs_dict[k].append(gs[k])
+        # for class_name in ["Background"]:
+        #     if class_name in self.gaussian_classes:
+        #         gs = self.models[class_name].get_gaussians(cam)
+        #         if gs is None:
+        #             continue
+
+        #         for k, _ in gs.items():
+        #             gs_dict[k].append(gs[k])
+
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
+            # if v is not None and len(v) > 0:
+            #     gs_dict[k] = torch.cat(v, dim=0)
+            # else:
+            #     gs_dict[k] = None
 
         gs = dataclass_gs(
             _means=gs_dict["_means"],

@@ -149,12 +149,12 @@ def main(args):
     render_keys = [
         "gt_rgbs",
         "rgbs",
-        "Background_rgbs",
-        "Dynamic_rgbs",
-        "RigidNodes_rgbs",
-        "DeformableNodes_rgbs",
-        "SMPLNodes_rgbs",
-        # "depths",
+        # "Background_rgbs",
+        # "Dynamic_rgbs",
+        # "RigidNodes_rgbs",
+        # "DeformableNodes_rgbs",
+        # "SMPLNodes_rgbs",
+        "depths",
         # "Background_depths",
         # "Dynamic_depths",
         # "RigidNodes_depths",
@@ -164,6 +164,10 @@ def main(args):
     ]
     if cfg.render.vis_lidar:
         render_keys.insert(0, "lidar_on_images")
+    if cfg.render.vis_exp_lidar:
+        render_keys.insert(0, "lidar_expand_on_depts")
+        render_keys.insert(0, "lidar_expand_on_images")
+        render_keys.insert(0, "expand_depths")
     if cfg.render.vis_sky:
         render_keys += ["rgb_sky_blend", "rgb_sky"]
     if cfg.render.vis_error:
@@ -508,7 +512,7 @@ if __name__ == "__main__":
     
     # wandb logging part
     parser.add_argument("--enable_wandb", action="store_true", help="enable wandb logging")
-    parser.add_argument("--entity", default="ziyc", type=str, help="wandb entity name")
+    parser.add_argument("--entity", default="starsixmoon-team", type=str, help="wandb entity name")
     parser.add_argument("--project", default="drivestudio", type=str, help="wandb project name, also used to enhance log_dir")
     parser.add_argument("--run_name", default="omnire", type=str, help="wandb run name, also used to enhance log_dir")
     

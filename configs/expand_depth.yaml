@@ -274,13 +274,16 @@ render:
     traj_types:
       - front_center_interp # type of trajectory for novel view synthesis
     fps: 24 # frames per second for novel view rendering
-  vis_lidar: False # whether to visualize lidar points on ground truth images
-  vis_sky: False # whether to include "rgb_sky" and "rgb_sky_blend" in rendered keys
-  vis_error: False # whether to include "rgb_error_map" in rendered keys
+  vis_lidar: True # whether to visualize lidar points on ground truth images
+  vis_exp_lidar: True # whether to visualize lidar points on rendered images at expand pose
+  vis_sky: True # whether to include "rgb_sky" and "rgb_sky_blend" in rendered keys
+  vis_error: True # whether to include "rgb_error_map" in rendered keys
 
 # ------------- logging ------------ #
 logging:
   vis_freq: 2000 # how often to visualize training stats
   print_freq: 500 # how often to print training stats
-  save_ckpt_freq: 2000 # how often to save checkpoints
+  save_ckpt_freq: 80000 # how often to save checkpoints
+  save_kf_box_pose_freq: 2000 # how often to save box pose annotations
+  kf_interval: 5 # how often to save box pose annotations
   save_seperate_video: True # whether to save seperate videos for each scene
