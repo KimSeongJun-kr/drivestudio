@@ -128,6 +128,8 @@ class viewer_trainer(BasicTrainer):
         }
         for class_name in self.gaussian_classes.keys():
             if class_name in self.models and self.models[class_name] is not None:
+                if class_name == "Sky":
+                    continue
                 if class_name != "Background":
                     self.models[class_name].set_cur_frame(self.vis_curr_frame)
 
@@ -263,7 +265,10 @@ if __name__ == "__main__":
                         # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try0/checkpoint_200000.pth"
                         # default="/workspace/drivestudio/output/feasibility_check_0618/run_updated_scene_1_date_0529_try_1/checkpoint_30000_final.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try1_ex10_w1/checkpoint_50000_final.pth"
-                        default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try1/checkpoint_50000_final.pth"
+                        default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try3_ex1_w10_nd/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try4_ex1_w10_nd_nv/checkpoint_50000_final.pth"
     )
     parser.add_argument("--config_file", help="path to config file", type=str, 
                         default="/workspace/drivestudio/configs/experiments/0804/iter_50k_try3_ex1_w10_nd.yaml")
