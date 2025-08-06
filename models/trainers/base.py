@@ -738,9 +738,7 @@ class BasicTrainer(nn.Module):
 
             # 공통 부분: 가우시안과 라이다 포인트 간의 거리 계산
             if dynamic_lidar_points is not None and dynamic_lidar_points.shape[0] > 0:
-                # 4. 현재 프레임의 인스턴스들의 가우시간들 가져오기 (collect_gaussians 스타일)
-                dynamic_means_list = []
-                
+                # 4. 현재 프레임의 인스턴스들의 가우시안들 가져오기 (collect_gaussians 스타일)
                 camera_dict = dataclass_camera(
                     camtoworlds=cam_infos["camera_to_world"],
                     camtoworlds_gt=cam_infos["camera_to_world"],
@@ -750,43 +748,96 @@ class BasicTrainer(nn.Module):
                     H=cam_infos["height"],
                     W=cam_infos["width"]
                 )
-
+                
+                # 모든 동적 가우시안 데이터 수집
+                all_dynamic_means = []
+                all_dynamic_scales = []
+                all_dynamic_quats = []
+                
                 for class_name in self.gaussian_classes.keys():
                     # 동적 객체 클래스만 처리 (Background, Sky 등 제외)
-                    if class_name in ['RigidNodes', 'DeformableNodes', 'SMPLNodes']:
+                    if class_name in ['RigidNodes', 'DeformableNodes', 'SMPLNodes'] and class_name in self.models:
                         model = self.models[class_name]
                         gs = model.get_gaussians(camera_dict)
                         
-                        if gs is not None and "_means" in gs:
-                            dynamic_means_list.append(gs["_means"])
+                        if gs is not None:
+                            if "_means" in gs:
+                                all_dynamic_means.append(gs["_means"])
+                            if "_scales" in gs:
+                                all_dynamic_scales.append(gs["_scales"])
+                            if "_quats" in gs:
+                                all_dynamic_quats.append(gs["_quats"])
                 
-                if len(dynamic_means_list) > 0:
-                    # 모든 동적 가우시안 means 결합
-                    all_dynamic_means = torch.cat(dynamic_means_list, dim=0)  # (total_points, 3)
-                    
+                if len(all_dynamic_means) > 0:
+                    # 모든 동적 가우시안 데이터 결합
+                    dynamic_means_tensor = torch.cat(all_dynamic_means, dim=0).detach()  # (total_points, 3)
+                    dynamic_scales_tensor = torch.cat(all_dynamic_scales, dim=0).detach()  # (total_points, 3)
+                    dynamic_quats_tensor = torch.cat(all_dynamic_quats, dim=0).detach()  # (total_points, 4)
+                        
                     # 5. 필터링된 lidar points을 source, gaussian means를 target으로 KNN 적용
-                    if all_dynamic_means.shape[0] > 0:
+                    if dynamic_means_tensor.shape[0] > 0:
                         # KNN을 위한 거리 계산 (각 라이다 포인트에 대해 가장 가까운 가우시안 포인트 찾기)
                         # pytorch3d.ops.knn_points 사용 (배치 차원 필요)
                         dists, idx, nn = knn_points(
                             dynamic_lidar_points.unsqueeze(0),  # (1, N, 3)
-                            all_dynamic_means.unsqueeze(0),  # (1, M, 3)
+                            dynamic_means_tensor.unsqueeze(0),  # (1, M, 3)
                             K=1,
                         )
                         
-                        # 각 라이다 포인트에 대해 가장 가까운 가우시안 포인트까지의 거리
-                        min_distances = dists.squeeze(0).squeeze(-1)  # (N,) - 배치 차원과 K 차원 제거
+                        # 각 라이다 포인트에 대해 가장 가까운 가우시안의 인덱스
+                        closest_gaussian_idx = idx.squeeze(0).squeeze(-1)  # (N,)
                         
-                        # Distance threshold 적용
+                        # Step 1: 먼저 유클리디안 거리로 distance_threshold 필터링
+                        euclidean_distances = dists.squeeze(0).squeeze(-1)  # (N,)
                         distance_threshold = p2p_dist.get("distance_threshold", 1.5)
-                        valid_distance_mask = min_distances < distance_threshold
+                        valid_distance_mask = euclidean_distances < distance_threshold
                         
                         if valid_distance_mask.sum() > 0:
-                            # threshold 이내의 거리만 사용
-                            filtered_distances = min_distances[valid_distance_mask]
+                            # Step 2: threshold 이내의 포인트들에 대해서만 마할라노비스 거리 계산
+                            use_mahalanobis = p2p_dist.get("use_mahalanobis", True)
                             
-                            # 6. mean distance 계산하기
-                            p2p_dist_loss = filtered_distances.mean()
+                            # 필터링된 포인트들과 해당 가우시안들만 선택
+                            filtered_lidar_points = dynamic_lidar_points[valid_distance_mask]  # (M, 3)
+                            filtered_gaussian_idx = closest_gaussian_idx[valid_distance_mask]  # (M,)
+                            
+                            if use_mahalanobis:
+                                # 필터링된 포인트들에 대응하는 가우시안의 스케일과 쿼터니언 가져오기
+                                corresponding_scales = dynamic_scales_tensor[filtered_gaussian_idx]  # (M, 3)
+                                corresponding_quats = dynamic_quats_tensor[filtered_gaussian_idx]  # (M, 4)
+                                corresponding_means = dynamic_means_tensor[filtered_gaussian_idx]  # (M, 3)
+                                
+                                # 쿼터니언을 회전 행렬로 변환
+                                rotation_matrices = quat_to_rotmat(corresponding_quats)  # (M, 3, 3)
+                                
+                                # 스케일을 대각 행렬로 변환 (공분산 행렬의 고유값)
+                                scales_clamped = torch.clamp(corresponding_scales, min=1e-6)  # numerical stability
+
+                                # 라이다 포인트와 가우시안 중심 간의 차이벡터
+                                diff_vectors = filtered_lidar_points - corresponding_means  # (M, 3)
+                                
+                                # 마할라노비스 거리 제곱 계산: d² = (x-μ)^T * Σ^(-1) * (x-μ)
+                                # 효율적인 계산: d² = sum((R^T * (x-μ)) ** 2 / σ²)
+                                # 먼저 차이벡터를 주축 좌표계로 변환
+                                rotated_diff = torch.bmm(
+                                    rotation_matrices.transpose(-2, -1),  # R^T
+                                    diff_vectors.unsqueeze(-1)
+                                ).squeeze(-1)  # (M, 3)
+                                
+                                # 각 축에서의 정규화된 거리 제곱을 계산
+                                normalized_sq_dist = (rotated_diff ** 2) / (scales_clamped ** 2)  # (M, 3)
+                                mahalanobis_sq = normalized_sq_dist.sum(dim=-1)  # (M,)
+                                
+                                # # 마할라노비스 거리를 loss로 사용
+                                # mahalanobis_distances = torch.sqrt(torch.clamp(mahalanobis_sq, min=0))  # (M,)
+                                # p2p_dist_loss = mahalanobis_distances.mean()
+
+                                # 마할라노비스 거리를 사용하지 않는 경우, 필터링된 유클리디안 거리 사용
+                                filtered_euclidean_distances = euclidean_distances[valid_distance_mask]
+                                p2p_dist_loss = filtered_euclidean_distances.mean()
+                            else:
+                                # 마할라노비스 거리를 사용하지 않는 경우, 필터링된 유클리디안 거리 사용
+                                filtered_euclidean_distances = euclidean_distances[valid_distance_mask]
+                                p2p_dist_loss = filtered_euclidean_distances.mean()
                         else:
                             # threshold 이내의 포인트가 없으면 loss 계산하지 않음
                             p2p_dist_loss = None
