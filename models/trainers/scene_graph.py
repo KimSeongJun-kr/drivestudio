@@ -87,6 +87,8 @@ class MultiTrainer(BasicTrainer):
         self,
         dataset: DrivingDataset,
     ) -> None:
+        # dataset 참조 저장 (p2p_dist loss에서 lidar_source 접근용)
+        self.dataset = dataset
         # get instance points
         rigidnode_pts_dict, deformnode_pts_dict, smplnode_pts_dict = {}, {}, {}
         if "RigidNodes" in self.model_config:

@@ -17,6 +17,7 @@ from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from models.gaussians.basics import *
+from pytorch3d.ops import knn_points
 
 logger = logging.getLogger()
 
@@ -121,6 +122,9 @@ class BasicTrainer(nn.Module):
         # for evaluation
         self.cur_frame = torch.tensor(0, device=self.device)
         self.test_set_indices = test_set_indices # will be override
+        
+        # dataset reference for lidar access
+        self.dataset = None
         
         # a simple viewer for background visualization
         self.viewer = None
@@ -282,8 +286,8 @@ class BasicTrainer(nn.Module):
 
         # viewer
         if self.viewer is not None:
-            while self.viewer.state.status == "paused":
-                time.sleep(0.01)
+            # while self.viewer.state.status == "paused":
+            #     time.sleep(0.01)
             self.viewer.lock.acquire()
             self.tic = time.time()
         
@@ -322,13 +326,13 @@ class BasicTrainer(nn.Module):
         # viewer
         if self.viewer is not None:
             num_train_rays_per_step = self.render_cfg.batch_size * self.info["width"] * self.info["height"]
-            self.viewer.lock.release()
             num_train_steps_per_sec = 1.0 / (time.time() - self.tic)
             num_train_rays_per_sec = (
                 num_train_rays_per_step * num_train_steps_per_sec
             )
             # Update the viewer state.
-            self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+            self.viewer.lock.release()
+            # self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
             # Update the scene.
             self.viewer.update(step, num_train_rays_per_step)
     
@@ -663,6 +667,135 @@ class BasicTrainer(nn.Module):
                 # print("check expand_depth_loss_sum grad. rquired: ", expand_depth_loss_sum.requires_grad, ", fn: ", expand_depth_loss_sum.grad_fn)
             if not torch.isnan(expand_depth_loss_sum).any():
                 loss_dict.update({"expand_depth_loss": expand_depth_loss_sum})
+
+        # ----- p-to-p dist loss -----
+        p2p_dist = self.losses_dict.get("p2p_dist", None)
+        if p2p_dist is not None:
+            # get_lidar_rays 함수를 사용한 정확한 라이다 포인트 계산
+            # cur_frame을 CPU로 변환해서 전달 (lidar_source 데이터가 CPU에 있음)
+            lidar_infos = self.dataset.lidar_source.get_lidar_rays(self.cur_frame.cpu().item())
+            lidar_points_world = (
+                lidar_infos["lidar_origins"]
+                + lidar_infos["lidar_viewdirs"] * lidar_infos["lidar_ranges"]
+            )  # 이미 월드 좌표계의 3D 포인트
+            
+            # GPU로 이동 (다른 텐서들과 연산하기 위해)
+            lidar_points_world = lidar_points_world.to(self.device)
+            
+            # 2. 라이다 포인트를 현재 카메라 이미지에 투영해서 동적 객체 필터링
+            if "dynamic_masks" in image_infos and lidar_points_world.shape[0] > 0:
+                dynamic_mask = image_infos["dynamic_masks"]  # (H, W)
+                H, W = dynamic_mask.shape
+                
+                # 카메라 내재 파라미터 처리 (project_lidar_pts_on_images 스타일)
+                intrinsics = cam_infos["intrinsics"]  # (3, 3) or (4, 4)
+                if intrinsics.shape[0] == 4:
+                    intrinsic_4x4 = intrinsics
+                else:
+                    intrinsic_4x4 = torch.nn.functional.pad(intrinsics, (0, 1, 0, 1))
+                intrinsic_4x4[3, 3] = 1.0
+                
+                # lidar2img transformation matrix
+                cam_to_world = cam_infos["camera_to_world"]  # (4, 4)
+                lidar2img = intrinsic_4x4 @ cam_to_world.inverse()
+                
+                # 라이다 포인트를 이미지 평면에 투영
+                proj_lidar_points = (
+                    lidar2img[:3, :3] @ lidar_points_world.T + lidar2img[:3, 3:4]
+                ).T  # (num_pts, 3)
+                
+                depth = proj_lidar_points[:, 2]
+                cam_points = proj_lidar_points[:, :2] / (depth.unsqueeze(-1) + 1e-6)  # (num_pts, 2)
+                
+                # 유효한 포인트 마스크 (이미지 경계 내부 + 적절한 깊이)
+                valid_mask = (
+                    (cam_points[:, 0] >= 0)
+                    & (cam_points[:, 0] < W)
+                    & (cam_points[:, 1] >= 0)
+                    & (cam_points[:, 1] < H)
+                    & (depth > 1.5)
+                )  # (num_pts, )
+                
+                if valid_mask.sum() > 0:
+                    filtered_cam_points = cam_points[valid_mask]                        
+                    dynamic_point_values = dynamic_mask[
+                        filtered_cam_points[:, 1].long(), 
+                        filtered_cam_points[:, 0].long()
+                    ]
+                    
+                    # 동적 마스크 값을 boolean으로 변환 (0.5 threshold)
+                    dynamic_bool_mask = dynamic_point_values > 0.5
+                    
+                    if dynamic_bool_mask.sum() > 0:
+                        # 유효한 포인트들 중에서 동적 영역에 있는 포인트들만 선택
+                        valid_indices = torch.where(valid_mask)[0]
+                        dynamic_indices = valid_indices[dynamic_bool_mask]
+                        dynamic_lidar_points = lidar_points_world[dynamic_indices]
+                    else:
+                        dynamic_lidar_points = None
+                else:
+                    dynamic_lidar_points = None
+
+            # 공통 부분: 가우시안과 라이다 포인트 간의 거리 계산
+            if dynamic_lidar_points is not None and dynamic_lidar_points.shape[0] > 0:
+                # 4. 현재 프레임의 인스턴스들의 가우시간들 가져오기 (collect_gaussians 스타일)
+                dynamic_means_list = []
+                
+                camera_dict = dataclass_camera(
+                    camtoworlds=cam_infos["camera_to_world"],
+                    camtoworlds_gt=cam_infos["camera_to_world"],
+                    expand_camtoworlds=cam_infos["expand_camera_to_worlds"],
+                    expand_camtoworlds_gt=cam_infos["expand_camera_to_worlds"],
+                    Ks=cam_infos["intrinsics"],
+                    H=cam_infos["height"],
+                    W=cam_infos["width"]
+                )
+
+                for class_name in self.gaussian_classes.keys():
+                    # 동적 객체 클래스만 처리 (Background, Sky 등 제외)
+                    if class_name in ['RigidNodes', 'DeformableNodes', 'SMPLNodes']:
+                        model = self.models[class_name]
+                        gs = model.get_gaussians(camera_dict)
+                        
+                        if gs is not None and "_means" in gs:
+                            dynamic_means_list.append(gs["_means"])
+                
+                if len(dynamic_means_list) > 0:
+                    # 모든 동적 가우시안 means 결합
+                    all_dynamic_means = torch.cat(dynamic_means_list, dim=0)  # (total_points, 3)
+                    
+                    # 5. 필터링된 lidar points을 source, gaussian means를 target으로 KNN 적용
+                    if all_dynamic_means.shape[0] > 0:
+                        # KNN을 위한 거리 계산 (각 라이다 포인트에 대해 가장 가까운 가우시안 포인트 찾기)
+                        # pytorch3d.ops.knn_points 사용 (배치 차원 필요)
+                        dists, idx, nn = knn_points(
+                            dynamic_lidar_points.unsqueeze(0),  # (1, N, 3)
+                            all_dynamic_means.unsqueeze(0),  # (1, M, 3)
+                            K=1,
+                        )
+                        
+                        # 각 라이다 포인트에 대해 가장 가까운 가우시안 포인트까지의 거리
+                        min_distances = dists.squeeze(0).squeeze(-1)  # (N,) - 배치 차원과 K 차원 제거
+                        
+                        # Distance threshold 적용
+                        distance_threshold = p2p_dist.get("distance_threshold", 1.5)
+                        valid_distance_mask = min_distances < distance_threshold
+                        
+                        if valid_distance_mask.sum() > 0:
+                            # threshold 이내의 거리만 사용
+                            filtered_distances = min_distances[valid_distance_mask]
+                            
+                            # 6. mean distance 계산하기
+                            p2p_dist_loss = filtered_distances.mean()
+                        else:
+                            # threshold 이내의 포인트가 없으면 loss 계산하지 않음
+                            p2p_dist_loss = None
+                        
+                        if p2p_dist_loss is not None and not torch.isnan(p2p_dist_loss).any():
+                            loss_dict.update({
+                                "p2p_dist_loss": p2p_dist.w * p2p_dist_loss
+                            })
+            
 
         # ----- reg loss -----
         opacity_entropy_reg = self.losses_dict.get("opacity_entropy", None)
