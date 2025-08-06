@@ -690,7 +690,10 @@ class DrivingDataset(SceneDataset):
                 filtered_cam_points = cam_points[valid_mask]
 
                 # Apply egocar mask filtering
-                valid_mask_w_egocar_mask = valid_mask.clone()
+                if self.data_cfg.lidar_source.expand_depth.only_visible_points:
+                    valid_mask_w_egocar_mask = valid_mask.clone()
+                else:
+                    valid_mask_w_egocar_mask = torch.ones_like(valid_mask).bool()
                 if hasattr(cam, 'egocar_mask') and cam.egocar_mask is not None:
                     egocar_mask = cam.egocar_mask.bool() # (HEIGHT, WIDTH)
                     # Only check egocar mask for valid points
@@ -700,7 +703,7 @@ class DrivingDataset(SceneDataset):
                     valid_indices = torch.where(valid_mask)[0]
                     if egocar_point_mask.any():
                         valid_mask_w_egocar_mask[valid_indices[egocar_point_mask]] = False
-                    valid_mask = valid_mask_w_egocar_mask
+                    valid_mask = valid_mask & valid_mask_w_egocar_mask
                     filtered_depth = depth[valid_mask]
                     filtered_cam_points = cam_points[valid_mask]
 
@@ -742,7 +745,7 @@ class DrivingDataset(SceneDataset):
                             & (cam_points[:, 0] < cam.WIDTH)
                             & (cam_points[:, 1] >= 0)
                             & (cam_points[:, 1] < cam.HEIGHT)
-                            & (depth > 0)
+                            & (depth > 2.0)
                         ) # (num_pts, )
                         expand_valid_mask_w_egocar_mask = expand_valid_mask & valid_mask_w_egocar_mask
                         filtered_depth = depth[expand_valid_mask_w_egocar_mask]
