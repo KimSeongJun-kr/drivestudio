@@ -770,9 +770,9 @@ class BasicTrainer(nn.Module):
                 
                 if len(all_dynamic_means) > 0:
                     # 모든 동적 가우시안 데이터 결합
-                    dynamic_means_tensor = torch.cat(all_dynamic_means, dim=0).detach()  # (total_points, 3)
-                    dynamic_scales_tensor = torch.cat(all_dynamic_scales, dim=0).detach()  # (total_points, 3)
-                    dynamic_quats_tensor = torch.cat(all_dynamic_quats, dim=0).detach()  # (total_points, 4)
+                    dynamic_means_tensor = torch.cat(all_dynamic_means, dim=0) # (total_points, 3)
+                    dynamic_scales_tensor = torch.cat(all_dynamic_scales, dim=0)  # (total_points, 3)
+                    dynamic_quats_tensor = torch.cat(all_dynamic_quats, dim=0)  # (total_points, 4)
                         
                     # 5. 필터링된 lidar points을 source, gaussian means를 target으로 KNN 적용
                     if dynamic_means_tensor.shape[0] > 0:
