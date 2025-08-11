@@ -56,6 +56,8 @@ class RigidNodes(VanillaGaussians):
         instances_pose = []
         instances_size = []
         instances_fv = []
+        instances_detection_name = []
+        instances_true_id = []
         point_ids = []
         for id_in_model, (id_in_dataset, v) in enumerate(instance_pts_dict.items()):
             init_means.append(v["pts"])
@@ -63,12 +65,16 @@ class RigidNodes(VanillaGaussians):
             instances_pose.append(v["poses"].unsqueeze(1))
             instances_size.append(v["size"])
             instances_fv.append(v["frame_info"].unsqueeze(1))
+            instances_detection_name.append(v["detection_name"])
+            instances_true_id.append(v["true_id"])
             point_ids.append(torch.full((v["num_pts"], 1), id_in_model, dtype=torch.long))
         init_means = torch.cat(init_means, dim=0).to(self.device) # (N, 3)
         init_colors = torch.cat(init_colors, dim=0).to(self.device) # (N, 3)
         instances_pose = torch.cat(instances_pose, dim=1).to(self.device) # (num_frame, num_instances, 4, 4)
         self.instances_size = torch.stack(instances_size).to(self.device) # (num_instances, 3)
         self.instances_fv = torch.cat(instances_fv, dim=1).to(self.device) # (num_frame, num_instances)
+        self.instances_detection_name = instances_detection_name
+        self.instances_true_id = instances_true_id
         self.point_ids = torch.cat(point_ids, dim=0).to(self.device)
         instances_quats = self.get_instances_quats(instances_pose)
         instances_trans = instances_pose[..., :3, 3]
@@ -493,6 +499,7 @@ class RigidNodes(VanillaGaussians):
                             dot_product = (cur_quats[valid_mask] * expected_quats).sum(dim=-1)  # now dot in [0,1]
                             
                             # angular distance 계산 (이제 abs() 불필요)
+                            # angular_distance = 1.0 - dot_product.pow(2)
                             angular_distance = 1.0 - dot_product
                             loss = angular_distance.mean()
                             loss_dict["rot_temporal_smooth"] = loss * rot_cfg.w

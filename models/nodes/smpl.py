@@ -63,13 +63,15 @@ class SMPLNodes(RigidNodes):
         # collect all instances
         smpl_betas, smpl_qauts = [], []
         instances_quats, instances_trans, instances_size = [], [], []
-        instances_fv, point_ids = [], []
+        instances_fv, point_ids, instances_detection_name, instances_true_id = [], [], [], []
         # instances_pts, instances_colors = [], []
         for id_in_model, (id_in_dataset, v) in enumerate(instance_pts_dict.items()):
             smpl_qauts.append(v["smpl_quats"][:, 1:, :].unsqueeze(1))
             instances_quats.append(v["smpl_quats"][:, 0, :].unsqueeze(1))
             instances_trans.append(v["smpl_trans"].unsqueeze(1))
             instances_fv.append(v["frame_info"].unsqueeze(1))
+            instances_detection_name.append(v["detection_name"])
+            instances_true_id.append(v["true_id"])
             smpl_betas.append(v["smpl_betas"].unsqueeze(0))
             instances_size.append(v["size"])
             # instances_pts.append(v["pts"])
@@ -84,7 +86,8 @@ class SMPLNodes(RigidNodes):
         instances_size = torch.stack(instances_size).to(self.device)             # (num_instances, 3)
         point_ids = torch.cat(point_ids, dim=0).to(self.device)                  # (self.smpl_points_num*num_instances, 1)
         self.instances_fv    = instances_fv                            # (num_frame, num_instances)
-    
+        self.instances_detection_name = instances_detection_name
+        self.instances_true_id = instances_true_id
         self.template = SMPLTemplate(
             smpl_model_path="smpl_models/SMPL_NEUTRAL.pkl",
             num_human=smpl_betas.shape[0],

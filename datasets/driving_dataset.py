@@ -318,6 +318,8 @@ class DrivingDataset(SceneDataset):
                         "pts": [],
                         "colors": [],
                         # "flows": [],
+                        "detection_name": self.pixel_source.instances_detection_name[ins_id],
+                        "true_id": self.pixel_source.instances_true_id[ins_id].item(),
                     }
                 # get the pose of the instance at the given frame
                 o2w = self.pixel_source.instances_pose[fi, ins_id]
@@ -468,6 +470,8 @@ class DrivingDataset(SceneDataset):
                     "frame_info": frame_info,           # [frame_num]
                     "pts": torch.cat(collected_lidar_pts, dim=0),
                     "colors": torch.cat(collected_lidar_colors, dim=0),
+                    "detection_name": self.pixel_source.instances_detection_name[ins_id],
+                    "true_id": true_id,
                 }
         
         return instance_dict
