@@ -267,8 +267,12 @@ if __name__ == "__main__":
                         # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try1_ex10_w1/checkpoint_50000_final.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try1/checkpoint_50000_final.pth"
-                        default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try3_ex1_w10_nd/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try3_ex1_w10_nd/checkpoint_50000_final.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try4_ex1_w10_nd_nv/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try5_ex1_w10_nd_nv_bg/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try3_eucli_it100k/checkpoint_50000.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try6_ex1_w10_nd_nv_bg_rot/checkpoint_50000_final.pth"
+                        default="/workspace/drivestudio/output/box_experiments_0804/ptop_try3_eucli_it100k/checkpoint_100000_final.pth"
     )
     parser.add_argument("--config_file", help="path to config file", type=str, 
                         default="/workspace/drivestudio/configs/experiments/0804/iter_50k_try3_ex1_w10_nd.yaml")

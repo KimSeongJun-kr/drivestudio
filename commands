@@ -26,6 +26,7 @@ python3 -m pip install open3d==0.19.0
 python -m pip install --no-cache-dir \
   "git+https://github.com/nerfstudio-project/nerfview@main" \
   "git+https://github.com/nerfstudio-project/viser@main"
+python -m pip install splines
 
 # 3. Run OmniRe training
 ## Set Configuration
