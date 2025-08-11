@@ -286,10 +286,11 @@ class BasicTrainer(nn.Module):
 
         # viewer
         if self.viewer is not None:
-            # while self.viewer.state.status == "paused":
+            # while self.viewer.RenderTabState.status == "paused":
             #     time.sleep(0.01)
             self.viewer.lock.acquire()
             self.tic = time.time()
+
         
     def postprocess_per_train_step(self, step: int) -> None:
         radii = self.info["radii"]
@@ -327,12 +328,11 @@ class BasicTrainer(nn.Module):
         if self.viewer is not None:
             num_train_rays_per_step = self.render_cfg.batch_size * self.info["width"] * self.info["height"]
             num_train_steps_per_sec = 1.0 / (time.time() - self.tic)
-            num_train_rays_per_sec = (
-                num_train_rays_per_step * num_train_steps_per_sec
-            )
+            num_train_rays_per_sec = num_train_rays_per_step * num_train_steps_per_sec
+
             # Update the viewer state.
             self.viewer.lock.release()
-            # self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+            self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
             # Update the scene.
             self.viewer.update(step, num_train_rays_per_step)
     
@@ -570,10 +570,15 @@ class BasicTrainer(nn.Module):
         
         return outputs
     
-    def backward(self, loss_dict: Dict[str, torch.Tensor]) -> None:
+    def backward(self, loss_dict: Dict[str, torch.Tensor], selective_loss_dict: Dict[str, torch.Tensor] = None) -> None:
         # ----------------- backward ----------------
         total_loss = sum(loss for loss in loss_dict.values())
         self.grad_scaler.scale(total_loss).backward()
+        
+        # selective loss에 대한 backward 처리 (특정 파라미터에만 적용)
+        if selective_loss_dict:
+            self.backward_selective_loss(selective_loss_dict)
+        
         self.optimizer_step()
 
         scale = self.grad_scaler.get_scale()
@@ -585,6 +590,43 @@ class BasicTrainer(nn.Module):
                 if group["name"] in self.lr_schedulers:
                     new_lr = self.lr_schedulers[group["name"]](self.step)
                     group["lr"] = new_lr
+    
+    def backward_selective_loss(self, selective_loss_dict: Dict[str, torch.Tensor]) -> None:
+        """
+        특정 파라미터 그룹(ins_rotation, ins_translation)에만 selective loss를 적용
+        """
+        if not selective_loss_dict:
+            return
+            
+        # ins_rotation과 ins_translation 파라미터만 수집
+        target_params = []
+        target_params_names = []
+        for group in self.optimizer.param_groups:
+            group_name = group["name"]
+            if "ins_rotation" in group_name or "ins_translation" in group_name:
+                target_params.extend(group["params"])
+                target_params_names.append(group_name)
+        if target_params:
+            # selective loss의 총합 계산
+            total_selective_loss = sum(loss for loss in selective_loss_dict.values())
+            
+            # 특정 파라미터에만 gradient 계산
+            gradients = torch.autograd.grad(
+                outputs=self.grad_scaler.scale(total_selective_loss),
+                inputs=target_params,
+                create_graph=False,
+                retain_graph=False,
+                allow_unused=True
+            )
+            
+            # 계산된 gradient를 해당 파라미터에 누적
+            for param, grad in zip(target_params, gradients):
+                if grad is not None:
+                    if param.grad is None:
+                        param.grad = grad
+                    else:
+                        param.grad += grad
+                    # print("target_params_names: ", target_params_names, "param.grad.max: ", param.grad.max(), "param.grad.min: ", param.grad.min())
                 
     def compute_losses(
         self,
@@ -594,6 +636,8 @@ class BasicTrainer(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         # calculate loss
         loss_dict = {}
+        # 별도로 처리할 loss들을 저장
+        selective_loss_dict = {}
         
         if "egocar_masks" in image_infos:
             # in the case of egocar, we need to mask out the egocar region
@@ -790,7 +834,8 @@ class BasicTrainer(nn.Module):
                         # Step 1: 먼저 유클리디안 거리로 distance_threshold 필터링
                         euclidean_distances = dists.squeeze(0).squeeze(-1)  # (N,)
                         distance_threshold = p2p_dist.get("distance_threshold", 1.5)
-                        valid_distance_mask = euclidean_distances < distance_threshold
+                        valid_distance_mask = (euclidean_distances < distance_threshold) & \
+                                                (euclidean_distances > 0)
                         
                         if valid_distance_mask.sum() > 0:
                             # Step 2: threshold 이내의 포인트들에 대해서만 마할라노비스 거리 계산
@@ -827,13 +872,10 @@ class BasicTrainer(nn.Module):
                                 normalized_sq_dist = (rotated_diff ** 2) / (scales_clamped ** 2)  # (M, 3)
                                 mahalanobis_sq = normalized_sq_dist.sum(dim=-1)  # (M,)
                                 
-                                # # 마할라노비스 거리를 loss로 사용
-                                # mahalanobis_distances = torch.sqrt(torch.clamp(mahalanobis_sq, min=0))  # (M,)
-                                # p2p_dist_loss = mahalanobis_distances.mean()
+                                # 마할라노비스 거리를 loss로 사용
+                                mahalanobis_distances = torch.sqrt(torch.clamp(mahalanobis_sq, min=0))  # (M,)
+                                p2p_dist_loss = mahalanobis_distances.mean()
 
-                                # 마할라노비스 거리를 사용하지 않는 경우, 필터링된 유클리디안 거리 사용
-                                filtered_euclidean_distances = euclidean_distances[valid_distance_mask]
-                                p2p_dist_loss = filtered_euclidean_distances.mean()
                             else:
                                 # 마할라노비스 거리를 사용하지 않는 경우, 필터링된 유클리디안 거리 사용
                                 filtered_euclidean_distances = euclidean_distances[valid_distance_mask]
@@ -843,7 +885,8 @@ class BasicTrainer(nn.Module):
                             p2p_dist_loss = None
                         
                         if p2p_dist_loss is not None and not torch.isnan(p2p_dist_loss).any():
-                            loss_dict.update({
+                            # print("p2p_dist_loss: ", p2p_dist_loss)
+                            selective_loss_dict.update({
                                 "p2p_dist_loss": p2p_dist.w * p2p_dist_loss
                             })
             
@@ -910,7 +953,7 @@ class BasicTrainer(nn.Module):
             for k, v in class_reg_loss.items():
                 if not torch.isnan(v).any():
                     loss_dict[f"{class_name}_{k}"] = v
-        return loss_dict
+        return loss_dict, selective_loss_dict
     
     def compute_metrics(
         self,
@@ -1043,13 +1086,13 @@ class BasicTrainer(nn.Module):
             "_rgbs": [],
             "_opacities": [],
         }
+
+        self.vis_curr_frame = (self.vis_curr_frame + 1) % self.num_timesteps
+
         for class_name in self.gaussian_classes.keys():
             if class_name in self.models and self.models[class_name] is not None:
                 if class_name != "Background":
                     self.models[class_name].set_cur_frame(self.vis_curr_frame)
-                self.vis_curr_frame += 1
-                if self.vis_curr_frame == self.num_timesteps - 1:
-                    self.vis_curr_frame = 0
 
                 gs = self.models[class_name].get_gaussians(cam)
                 if gs is None:
