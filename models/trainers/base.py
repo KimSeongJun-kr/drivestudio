@@ -286,8 +286,8 @@ class BasicTrainer(nn.Module):
 
         # viewer
         if self.viewer is not None:
-            # while self.viewer.RenderTabState.status == "paused":
-            #     time.sleep(0.01)
+            while self.viewer.state == "paused":
+                time.sleep(0.01)
             self.viewer.lock.acquire()
             self.tic = time.time()
 
@@ -332,7 +332,7 @@ class BasicTrainer(nn.Module):
 
             # Update the viewer state.
             self.viewer.lock.release()
-            self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+            self.viewer.render_tab_state.num_train_rays_per_sec = num_train_rays_per_sec
             # Update the scene.
             self.viewer.update(step, num_train_rays_per_step)
     
@@ -1060,12 +1060,12 @@ class BasicTrainer(nn.Module):
 
     @torch.no_grad()
     def _viewer_render_fn(
-        self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        self, camera_state: nerfview.CameraState, tab_state: nerfview.RenderTabState
     ):
         """Callable function for the viewer."""
-        W, H = img_wh
+        W, H = tab_state.viewer_width, tab_state.viewer_height
         c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
+        K = camera_state.get_K((W, H))
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
         
