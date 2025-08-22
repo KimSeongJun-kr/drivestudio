@@ -78,6 +78,8 @@ class SingleTrainer(BasicTrainer):
         self,
         dataset: DrivingDataset,
     ) -> None:
+        # dataset 참조 저장 (p2p_dist loss에서 lidar_source 접근용)
+        self.dataset = dataset
         for class_name in self.gaussian_classes:
             model_cfg = self.model_config[class_name]
             model = self.models[class_name]

@@ -10,7 +10,8 @@
 
 data:
   # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_update/mini # data root for the dataset
-  data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_original/mini # data root for the dataset
+  # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_original/mini # data root for the dataset
+  data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini # data root for the dataset
   dataset: nuscenes # dataset type
   scene_idx: 0 # which scene to use, [0, 849] for nuscenes's train/val sets, inclusive
   start_timestep: 0 # which timestep to start from
@@ -23,10 +24,10 @@ data:
     downscale: 1 # downscale factor wrt to the downscale_when_loading
     undistort: False # whether to undistort the images
     test_image_stride: 0 # use every Nth timestep for the test set. if 0, use all images for training and none for testing
-    load_sky_mask: False # whether to load sky mask
-    load_dynamic_mask: False # whether to load dynamic mask
+    load_sky_mask: True # whether to load sky mask
+    load_dynamic_mask: True # whether to load dynamic mask
     load_objects: True # whether to load object bounding boxes
-    load_smpl: False # whether to load SMPL template for pedestrians
+    load_smpl: True # whether to load SMPL template for pedestrians
     only_dynamic: False # whether render only dynamic objects
     sampler: # error based image sampler
       buffer_downscale: 8 # downscale factor for the buffer wrt load_size
@@ -43,5 +44,5 @@ data:
     lidar_percentile: 0.02  # percentile to compute aabb from lidar
     expand_depth: # expand depth
       use_expand_depth: False # whether to use expand depth
-      expand_number: 10 # number of expand depth  
+      expand_number: 1 # number of expand depth  
       only_visible_points: False

@@ -87,6 +87,8 @@ class MultiTrainer(BasicTrainer):
         self,
         dataset: DrivingDataset,
     ) -> None:
+        # dataset 참조 저장 (p2p_dist loss에서 lidar_source 접근용)
+        self.dataset = dataset
         # get instance points
         rigidnode_pts_dict, deformnode_pts_dict, smplnode_pts_dict = {}, {}, {}
         if "RigidNodes" in self.model_config:
@@ -277,14 +279,14 @@ class MultiTrainer(BasicTrainer):
                 expand_rgbs.append(expand_rgb)
             outputs["expand_rgbs"] = torch.stack(expand_rgbs, dim=0)
 
-        # if not self.training and self.render_each_class:
-        #     with torch.no_grad():
-        #         for class_name in self.gaussian_classes.keys():
-        #             gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
-        #             sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
-        #             outputs[class_name+"_rgb"] = self.affine_transformation(sep_rgb, image_infos)
-        #             outputs[class_name+"_opacity"] = sep_opacity
-        #             outputs[class_name+"_depth"] = sep_depth
+        if not self.training and self.render_each_class:
+            with torch.no_grad():
+                for class_name in self.gaussian_classes.keys():
+                    gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
+                    sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
+                    outputs[class_name+"_rgb"] = self.affine_transformation(sep_rgb, image_infos)
+                    outputs[class_name+"_opacity"] = sep_opacity
+                    outputs[class_name+"_depth"] = sep_depth
 
         if not self.training or self.render_dynamic_mask:
             with torch.no_grad():
@@ -305,10 +307,10 @@ class MultiTrainer(BasicTrainer):
         outputs: Dict[str, torch.Tensor],
         image_infos: Dict[str, torch.Tensor],
         cam_infos: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        loss_dict = super().compute_losses(outputs, image_infos, cam_infos)
+    ) -> tuple:
+        loss_dict, selective_loss_dict = super().compute_losses(outputs, image_infos, cam_infos)
         
-        return loss_dict
+        return loss_dict, selective_loss_dict
     
     def compute_metrics(
         self,

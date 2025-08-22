@@ -264,7 +264,7 @@ def main(args):
         outputs = trainer(image_infos, cam_infos)
         trainer.update_visibility_filter()
 
-        loss_dict = trainer.compute_losses(
+        loss_dict, selective_loss_dict = trainer.compute_losses(
             outputs=outputs,
             image_infos=image_infos,
             cam_infos=cam_infos,
@@ -275,7 +275,13 @@ def main(args):
                 raise ValueError(f"NaN detected in loss {k} at step {step}")
             if torch.isinf(v).any():
                 raise ValueError(f"Inf detected in loss {k} at step {step}")
-        trainer.backward(loss_dict)
+        # selective loss도 NaN/Inf 체크
+        for k, v in selective_loss_dict.items():
+            if torch.isnan(v).any():
+                raise ValueError(f"NaN detected in selective loss {k} at step {step}")
+            if torch.isinf(v).any():
+                raise ValueError(f"Inf detected in selective loss {k} at step {step}")
+        trainer.backward(loss_dict, selective_loss_dict)
         
         # after training step
         trainer.postprocess_per_train_step(step=step)
@@ -291,6 +297,7 @@ def main(args):
         metric_logger.update(**{"train_metrics/"+k: v.item() for k, v in metric_dict.items()})
         metric_logger.update(**{"train_stats/gaussian_num_" + k: v for k, v in trainer.get_gaussian_count().items()})
         metric_logger.update(**{"losses/"+k: v.item() for k, v in loss_dict.items()})
+        metric_logger.update(**{"selective_losses/"+k: v.item() for k, v in selective_loss_dict.items()})
         metric_logger.update(**{"train_stats/lr_" + group['name']: group['lr'] for group in trainer.optimizer.param_groups})
         if args.enable_wandb:
             wandb.log({k: v.avg for k, v in metric_logger.meters.items()})
@@ -430,7 +437,10 @@ def _extract_pose_annotations(
         else:
             quats = model.instances_quats.detach().cpu().numpy()
         sizes = model.instances_size.detach().cpu().numpy()
-
+        valid_mask = model.instances_fv.detach().cpu().numpy()
+        detection_names = model.instances_detection_name
+        true_ids = model.instances_true_id
+        
         num_frames, num_instances = trans.shape[:2]
         keyframes = range(0, num_frames, keyframe_interval)
 
@@ -439,6 +449,9 @@ def _extract_pose_annotations(
             inst_size = [inst_size[1], inst_size[0], inst_size[2]]
 
             for fi in keyframes:
+                if valid_mask[fi, inst_id] == 0:
+                    continue
+
                 t = trans[fi, inst_id]
                 q = quats[fi, inst_id]
                 if np.allclose(t, 0, atol=1e-6):
@@ -453,8 +466,8 @@ def _extract_pose_annotations(
                     "translation": t_world.tolist(),
                     "rotation": q_world.tolist(),
                     "size": inst_size,
-                    "detection_name": dataset.pixel_source.instances_detection_name[inst_id],
-                    "instance_id": int(inst_id),
+                    "detection_name": detection_names[inst_id],
+                    "instance_id": true_ids[inst_id],
                     "node_type": node_type,
                     "confidence": 1.0,
                 }

@@ -105,7 +105,7 @@ class viewer_trainer(BasicTrainer):
         """Callable function for the viewer."""
         W, H = tab_state.viewer_width, tab_state.viewer_height
         c2w = camera_state.c2w
-        K = camera_state.get_K([W, H])
+        K = camera_state.get_K((W, H))
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
 
@@ -128,6 +128,8 @@ class viewer_trainer(BasicTrainer):
         }
         for class_name in self.gaussian_classes.keys():
             if class_name in self.models and self.models[class_name] is not None:
+                if class_name == "Sky":
+                    continue
                 if class_name != "Background":
                     self.models[class_name].set_cur_frame(self.vis_curr_frame)
 
@@ -176,25 +178,6 @@ class viewer_trainer(BasicTrainer):
     def load_checkpoint(self, ckpt_path: str):
         state_dict = torch.load(ckpt_path)
         self.load_state_dict(state_dict, load_only_model=True, strict=True)
-
-    def update_viewer(self):
-        num_train_rays_per_step = self.render_cfg.batch_size * self.image_width * self.image_height
-        self.viewer.lock.release()
-        num_train_steps_per_sec = 1.0 / (time.time() - self.tic)
-        num_train_rays_per_sec = (
-            num_train_rays_per_step * num_train_steps_per_sec
-        )
-        # Update the viewer state.
-        self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
-        # Update the scene.
-        self.viewer.update(self.vis_curr_frame, num_train_rays_per_step)
-
-        if self.viewer is not None:
-            while self.viewer.state.status == "paused":
-                time.sleep(0.01)
-
-        self.viewer.lock.acquire()
-        self.tic = time.time()
 
 def force_redraw_heartbeat(get_clients, hz=10, eps=1e-3):
     while True:
@@ -263,10 +246,18 @@ if __name__ == "__main__":
                         # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try0/checkpoint_200000.pth"
                         # default="/workspace/drivestudio/output/feasibility_check_0618/run_updated_scene_1_date_0529_try_1/checkpoint_30000_final.pth"
                         # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try1_ex10_w1/checkpoint_50000_final.pth"
-                        default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try1/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try3_ex1_w10_nd/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try4_ex1_w10_nd_nv/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try5_ex1_w10_nd_nv_bg/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try3_eucli_it100k/checkpoint_50000.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try6_ex1_w10_nd_nv_bg_rot/checkpoint_50000_final.pth"
+                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try3_eucli_it100k/checkpoint_100000_final.pth"
+                        default="/workspace/drivestudio/output/box_experiments_0804/ptop_try2_mahala/checkpoint_50000_final.pth"
     )
     parser.add_argument("--config_file", help="path to config file", type=str, 
-                        default="/workspace/drivestudio/configs/experiments/0804/iter_50k_try3_ex1_w10_nd.yaml")
+                        default="/workspace/drivestudio/configs/experiments/0804/ptop_try2_mahala.yaml")
     parser.add_argument("--dataset", type=str, default="nuscenes/6cams_viewer")
     
     args = parser.parse_args()
@@ -320,7 +311,6 @@ if __name__ == "__main__":
 
     # trainer.viewer.lock.acquire()
     while True:
-        # trainer.update_viewer()
         trainer.vis_curr_frame = (trainer.vis_curr_frame + 1) % trainer.num_timesteps
         time.sleep(0.05)
 
