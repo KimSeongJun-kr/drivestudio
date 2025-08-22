@@ -61,6 +61,7 @@ def lr_scheduler_fn(
     return func
 
 class BasicTrainer(nn.Module):
+    dataset: Optional["DrivingDataset"]
     def __init__(
         self,
         type: str = "basic",

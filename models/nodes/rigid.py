@@ -511,6 +511,8 @@ class RigidNodes(VanillaGaussians):
             "points_ids": self.point_ids,
             "instances_size": self.instances_size,
             "instances_fv": self.instances_fv,
+            "instances_detection_name": self.instances_detection_name,
+            "instances_true_id": self.instances_true_id,
         })
         return state_dict
     
@@ -524,6 +526,8 @@ class RigidNodes(VanillaGaussians):
         self.instances_quats = Parameter(
             torch.zeros(self.num_frames, self.num_instances, 4, device=self.device)
         )
+        self.instances_detection_name = state_dict.pop("instances_detection_name")
+        self.instances_true_id = state_dict.pop("instances_true_id")
         msg = super().load_state_dict(state_dict, **kwargs)
         return msg
     

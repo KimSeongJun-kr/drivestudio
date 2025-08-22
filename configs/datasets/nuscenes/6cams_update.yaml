@@ -9,7 +9,9 @@
 #    5    CAM_BACK          (900, 1600)
 
 data:
-  data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_update/mini # data root for the dataset
+  # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_update/mini # data root for the dataset
+  # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_original/mini # data root for the dataset
+  data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini # data root for the dataset
   dataset: nuscenes # dataset type
   scene_idx: 0 # which scene to use, [0, 849] for nuscenes's train/val sets, inclusive
   start_timestep: 0 # which timestep to start from
@@ -41,6 +43,6 @@ data:
     lidar_downsample_factor: 4 # downsample lidar by this factor to compute percentile
     lidar_percentile: 0.02  # percentile to compute aabb from lidar
     expand_depth: # expand depth
-      use_expand_depth: False # whether to use expand depth
+      use_expand_depth: True # whether to use expand depth
       expand_number: 1 # number of expand depth  
       only_visible_points: False

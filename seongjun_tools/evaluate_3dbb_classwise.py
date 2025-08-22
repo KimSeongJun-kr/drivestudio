@@ -417,6 +417,8 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
                 tp = np.nan
             else:
                 tp = float(np.mean(match_data[metric_name]))
+                std_dev = float(np.std(match_data[metric_name]))
+                print(f"🔍 {node_type} {metric_name} MAE: {tp}, std_dev: {std_dev}")
             metrics.add_label_tp(node_type, metric_name, tp)
 
     # Get metrics summary
@@ -496,13 +498,16 @@ def main() -> None:
         "--ctrl",
         type=str,
         # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_class.json',
-        default='/workspace/drivestudio/output/box_experiments_0804_eval/prediction/results_tracking.json',
+        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
+        # default='/workspace/drivestudio/output/box_experiments_0804_eval/prediction/results_tracking.json',
         help="Path to comparison prediction json file",
     )
     parser.add_argument(
         "--tar",
         type=str,
-        default='/workspace/drivestudio/output/box_experiments_0804_eval',
+        # default='/workspace/drivestudio/output/box_experiments_0804_eval',
+        # default='/workspace/drivestudio/output/box_experiments_0813',
+        default='/workspace/drivestudio/output/box_experiments_0821',
         help="Directory to search for target files",
     )
     parser.add_argument(
@@ -532,7 +537,7 @@ def main() -> None:
     parser.add_argument(
         "--verbose",
         type=bool,
-        default=False,
+        default=True,
         help="Verbose",
     )
     parser.add_argument(
@@ -687,8 +692,10 @@ def main() -> None:
         
         # Perform evaluation
         if args.verbose:
-            print("📊 Performing evaluation...")
+            print(f"\n    Performing target evaluation...")
         eval_results = perform_evaluation(final_gt_evalboxes, final_target_evalboxes, config, nusc, target_file)
+        if args.verbose:
+            print(f"\n    Performing control evaluation...")
         ctrl_eval_results = perform_evaluation(final_gt_evalboxes, final_ctrl_evalboxes, config, nusc, args.ctrl)
 
         # Store results

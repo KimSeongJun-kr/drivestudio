@@ -528,6 +528,8 @@ class SMPLNodes(RigidNodes):
             "points_ids": self.point_ids,
             "instances_size": self.instances_size,
             "instances_fv": self.instances_fv,
+            "instances_detection_name": self.instances_detection_name,
+            "instances_true_id": self.instances_true_id,
         })
         return state_dict
 
@@ -544,6 +546,8 @@ class SMPLNodes(RigidNodes):
         self.smpl_qauts = Parameter(
             torch.zeros(self.num_frames, self.num_instances, 23, 4, device=self.device)
         )
+        self.instances_detection_name = state_dict.pop("instances_detection_name")
+        self.instances_true_id = state_dict.pop("instances_true_id")
         self.template = SMPLTemplate(
             smpl_model_path="smpl_models/SMPL_NEUTRAL.pkl",
             num_human=self.num_instances,
