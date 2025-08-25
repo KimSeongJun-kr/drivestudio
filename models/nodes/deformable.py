@@ -120,7 +120,6 @@ class DeformableNodes(RigidNodes):
             w = out_of_bound_losscfg.w
             local_xyz_deformed = self._gs_cache["local_xyz_deformed"]
             if w > 0 and local_xyz_deformed is not None:
-                local_xyz_deformed = self._gs_cache["local_xyz_deformed"]
                 per_pts_size = self.instances_size[self.point_ids[..., 0]]
                 loss_dict["out_of_bound_loss"] = torch.relu(local_xyz_deformed.abs() - per_pts_size / 2).mean() * w
         return loss_dict

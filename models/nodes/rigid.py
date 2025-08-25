@@ -503,6 +503,15 @@ class RigidNodes(VanillaGaussians):
                             angular_distance = 1.0 - dot_product
                             loss = angular_distance.mean()
                             loss_dict["rot_temporal_smooth"] = loss * rot_cfg.w
+
+        out_of_bound_losscfg = self.reg_cfg.get("out_of_bound_loss", None)
+        if out_of_bound_losscfg is not None:
+            w = out_of_bound_losscfg.w
+
+            if w > 0 and self._means is not None:
+                per_pts_size = self.instances_size[self.point_ids[..., 0]]
+                loss_dict["out_of_bound_loss"] = torch.relu(self._means.abs() - per_pts_size / 2).mean() * w
+
         return loss_dict
 
     def state_dict(self) -> Dict:
