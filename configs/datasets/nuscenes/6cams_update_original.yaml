@@ -11,7 +11,8 @@
 data:
   # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_update/mini # data root for the dataset
   # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_original/mini # data root for the dataset
-  data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini # data root for the dataset
+  # data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini # data root for the dataset
+  data_root: data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini # data root for the dataset
   dataset: nuscenes # dataset type
   scene_idx: 0 # which scene to use, [0, 849] for nuscenes's train/val sets, inclusive
   start_timestep: 0 # which timestep to start from

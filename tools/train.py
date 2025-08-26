@@ -439,6 +439,7 @@ def _extract_pose_annotations(
         sizes = model.instances_size.detach().cpu().numpy()
         valid_mask = model.instances_fv.detach().cpu().numpy()
         detection_names = model.instances_detection_name
+        instance_tokens = model.instances_instance_token
         true_ids = model.instances_true_id
         
         num_frames, num_instances = trans.shape[:2]
@@ -467,6 +468,7 @@ def _extract_pose_annotations(
                     "rotation": q_world.tolist(),
                     "size": inst_size,
                     "detection_name": detection_names[inst_id],
+                    "instance_token": instance_tokens[inst_id],
                     "instance_id": true_ids[inst_id],
                     "node_type": node_type,
                     "confidence": 1.0,

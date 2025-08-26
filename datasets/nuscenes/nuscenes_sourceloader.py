@@ -235,6 +235,7 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_true_id = np.arange(num_instances)
         instances_model_types = np.ones(num_instances) * -1
         instances_detection_name = np.empty(num_instances, dtype=object)
+        instances_instance_token = np.empty(num_instances, dtype=object)
         detection_mapping = {
             'movable_object.barrier': 'barrier',
             'vehicle.bicycle': 'bicycle',
@@ -262,6 +263,7 @@ class NuScenesPixelSource(ScenePixelSource):
                 instances_detection_name[int(k)] = detection_mapping[v["class_name"]]
             else:
                 instances_detection_name[int(k)] = v["class_name"]
+            instances_instance_token[int(k)] = v["id"]
             
             for frame_idx, obj_to_world, box_size in zip(v["frame_annotations"]["frame_idx"], v["frame_annotations"]["obj_to_world"], v["frame_annotations"]["box_size"]):
                 # the first ego pose as the origin of the world coordinate system.
@@ -291,6 +293,7 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_model_types = instances_model_types[ins_frame_cnt > 0]
         per_frame_instance_mask = per_frame_instance_mask[:, ins_frame_cnt > 0]
         instances_detection_name = instances_detection_name[ins_frame_cnt > 0]
+        instances_instance_token = instances_instance_token[ins_frame_cnt > 0]  
         
         # assign to the class
         # (num_frames, num_instances, 4, 4)
@@ -305,7 +308,8 @@ class NuScenesPixelSource(ScenePixelSource):
         self.instances_model_types = instances_model_types
         # (num_instances) original string class names
         self.instances_detection_name = instances_detection_name
-
+        # (num_instances) original instance token
+        self.instances_instance_token = instances_instance_token
         if self.data_cfg.load_smpl:
             # Collect camera-to-world matrices for all available cameras
             cam_to_worlds = {}

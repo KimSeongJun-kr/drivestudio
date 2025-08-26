@@ -738,6 +738,8 @@ class ScenePixelSource(abc.ABC):
     per_frame_instance_mask: Tensor = None
     # (num_instances,)
     instances_detection_name: Optional[np.ndarray] = None
+    # (num_instances,)
+    instances_instance_token: Optional[np.ndarray] = None
 
     def __init__(
         self, dataset_name, pixel_data_config: OmegaConf, device: torch.device = torch.device("cpu")

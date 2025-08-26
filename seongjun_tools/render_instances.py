@@ -521,6 +521,8 @@ def main():
             true_id = None
             if hasattr(model, "instances_detection_name") and ins_id < len(model.instances_detection_name):
                 det_name = model.instances_detection_name[ins_id]
+            if hasattr(model, "instances_instance_token") and ins_id < len(model.instances_instance_token):
+                instance_token = model.instances_instance_token[ins_id]
             if hasattr(model, "instances_true_id") and ins_id < len(model.instances_true_id):
                 true_id = model.instances_true_id[ins_id]
 
