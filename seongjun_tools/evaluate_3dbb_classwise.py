@@ -418,7 +418,8 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
             else:
                 tp = float(np.mean(match_data[metric_name]))
                 std_dev = float(np.std(match_data[metric_name]))
-                print(f"🔍 {node_type} {metric_name} MAE: {tp}, std_dev: {std_dev}")
+                rmse = float(np.sqrt(np.mean(np.square(match_data[metric_name]))))
+                print(f"🔍 {node_type} {metric_name} MAE: {tp}, RMSE: {rmse}")
             metrics.add_label_tp(node_type, metric_name, tp)
 
     # Get metrics summary
@@ -498,7 +499,8 @@ def main() -> None:
         "--ctrl",
         type=str,
         # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_class.json',
-        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
+        # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
+        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
         # default='/workspace/drivestudio/output/box_experiments_0804_eval/prediction/results_tracking.json',
         help="Path to comparison prediction json file",
     )
@@ -507,7 +509,8 @@ def main() -> None:
         type=str,
         # default='/workspace/drivestudio/output/box_experiments_0804_eval',
         # default='/workspace/drivestudio/output/box_experiments_0813',
-        default='/workspace/drivestudio/output/box_experiments_0821',
+        # default='/workspace/drivestudio/output/box_experiments_0821',
+        default='/workspace/drivestudio/output/box_experiments_0825',
         help="Directory to search for target files",
     )
     parser.add_argument(

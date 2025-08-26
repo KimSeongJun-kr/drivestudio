@@ -31,7 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prep_file",
         type=str,
-        default="/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info.json",
+        default="/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info.json",
+        # default="/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_noisy.json",
         help="입력 instances_info(_noisy).json 파일 경로",
     )
     parser.add_argument(
@@ -204,7 +205,7 @@ def convert_instances_to_predictions(
             pred = {
                 "sample_token": sample_token,
                 "translation": [float(t[0]), float(t[1]), float(t[2])],
-                "size": [float(size_wlh[0]), float(size_wlh[1]), float(size_wlh[2])],
+                "size": [float(size_wlh[1]), float(size_wlh[0]), float(size_wlh[2])],
                 "rotation": [float(q) for q in quat],  # [w,x,y,z]
                 "velocity": [0.0, 0.0],
                 "detection_name": det_name,
