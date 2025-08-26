@@ -136,7 +136,7 @@ def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> 
     if eval_split in {'train', 'val', 'train_detect', 'train_track'}:
         assert version.endswith('trainval'), \
             'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
-    elif eval_split in {'mini_train', 'mini_val'}:
+    elif eval_split in {'mini_train', 'mini_val', 'mini_trainval'}:
         assert version.endswith('mini'), \
             'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
     elif eval_split == 'test':
@@ -536,7 +536,7 @@ def main() -> None:
     nusc = NuScenes(
         version=args.version, dataroot=args.dataroot, verbose=args.verbose)
     eval_set_map = {
-        'v1.0-mini': 'mini_val',
+        'v1.0-mini': 'mini_trainval',
         'v1.0-trainval': 'val',
     }
 
