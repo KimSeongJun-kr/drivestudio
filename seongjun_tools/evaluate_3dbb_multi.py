@@ -273,13 +273,13 @@ def main() -> None:
     parser.add_argument(
         "--tar",
         type=str,
-        default='/workspace/drivestudio/output/box_experiments_0714',
+        default='/workspace/drivestudio/output/box_experiments_0804',
         help="Directory to search for target files",
     )
     parser.add_argument(
         "--name",
         type=str,
-        default='box_poses_80000.json',
+        default='box_poses_50000.json',
         help="Name of the files to find in tar directory",
     )
     parser.add_argument(
@@ -323,7 +323,7 @@ def main() -> None:
         version=args.version, dataroot=args.dataroot, verbose=False)
     
     eval_set_map = {
-        'v1.0-mini': 'mini_val',
+        'v1.0-mini': 'mini_trainval',
         'v1.0-trainval': 'val',
     }
     
