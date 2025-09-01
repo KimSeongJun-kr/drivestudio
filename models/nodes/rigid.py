@@ -433,7 +433,7 @@ class RigidNodes(VanillaGaussians):
 
     def get_instance_activated_gs_dict(self, ins_id: int) -> Dict[str, torch.Tensor]:
         pts_mask = self.point_ids[..., 0] == ins_id
-        if pts_mask.sum() < 100:
+        if pts_mask.sum() == 0:
             return None
         local_means = self._means[pts_mask]
         activated_opacities = torch.sigmoid(self._opacities[pts_mask])

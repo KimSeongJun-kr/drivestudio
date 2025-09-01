@@ -119,10 +119,6 @@ def rotation_matrix_to_quaternion(R: np.ndarray) -> List[float]:
     return q.astype(float).tolist()
 
 
-def detection_name_from_class(class_name: str, default_name: str) -> str:
-    return DETECTION_MAPPING.get(class_name, default_name)
-
-
 def convert_instances_to_predictions(
     instances_info: Dict[str, Any],
     instance_to_sample_tokens: Dict[str, List[str]],
@@ -132,7 +128,8 @@ def convert_instances_to_predictions(
     meta = {"use_camera": False, "use_lidar": True}
     results: Dict[str, List[Dict[str, Any]]] = {}
 
-    for instance_id, inst in instances_info.items():
+    for instance_idx, inst in instances_info.items():
+        instance_token = inst.get("id", "")
         class_name = inst.get("class_name", "")
         frame_ann: Dict[str, Any] = inst.get("frame_annotations", {})
         frame_idx_list: List[int] = frame_ann.get("frame_idx", [])  # type: ignore
@@ -200,7 +197,7 @@ def convert_instances_to_predictions(
             if not sample_token:
                 raise ValueError(f"인스턴스 {inst_token}의 k={k} 위치에서 sample_token이 비어있습니다.")
 
-            det_name = detection_name_from_class(class_name, default_name)
+            det_name = DETECTION_MAPPING.get(class_name, default_name)
 
             pred = {
                 "sample_token": sample_token,
@@ -211,6 +208,8 @@ def convert_instances_to_predictions(
                 "detection_name": det_name,
                 "detection_score": float(score),
                 "attribute_name": "",
+                "instance_token": instance_token,
+                "instance_idx": instance_idx,
             }
 
             if sample_token not in results:
