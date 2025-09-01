@@ -110,21 +110,24 @@ def main(args):
     cfg = setup(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    from nuscenes import NuScenes
-    from nuscenes.eval.detection.config import config_factory
-    from seongjun_tools.utils.splits import create_splits_scenes
-    from seongjun_tools.utils.loaders import load_gt
-    from seongjun_tools.utils.detection.data_classes import DetectionBox
-    from seongjun_tools.evaluate_3dbb_instancewise import _get_scene_sample_tokens_chronologically
+    if args.enable_wandb and cfg.logging.wandb_box_err_freq > 0:
+        from nuscenes import NuScenes
+        from nuscenes.eval.detection.config import config_factory
+        from seongjun_tools.utils.splits import create_splits_scenes
+        from seongjun_tools.utils.loaders import load_gt
+        from seongjun_tools.utils.detection.data_classes import DetectionBox
+        from seongjun_tools.evaluate_3dbb_instancewise import _get_scene_sample_tokens_chronologically
+        from seongjun_tools.evaluate_3dbb import filter_boxes_by_scene
 
-    # load nuscenes gt data
-    nusc = NuScenes(
-        version="v1.0-mini", dataroot="/workspace/drivestudio/data/nuscenes/raw", verbose=False)
-    splits = create_splits_scenes()
-    scene_name = splits['mini_trainval'][cfg.data.scene_idx]
-    scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
-    config = config_factory('detection_cvpr_2019')
-    gt_boxes, _ = load_gt(nusc, 'mini_trainval', DetectionBox, verbose=False)
+        # load nuscenes gt data
+        nusc = NuScenes(
+            version="v1.0-mini", dataroot="/workspace/drivestudio/data/nuscenes/raw", verbose=False)
+        splits = create_splits_scenes()
+        scene_name = splits['mini_trainval'][cfg.data.scene_idx]
+        scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
+        config = config_factory('detection_cvpr_2019')
+        gt_boxes, _ = load_gt(nusc, 'mini_trainval', DetectionBox, verbose=False)
+        gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, scene_name)
 
     # build dataset
     dataset = DrivingDataset(data_cfg=cfg.data)
@@ -316,21 +319,71 @@ def main(args):
         metric_logger.update(**{"selective_losses/"+k: v.item() for k, v in selective_loss_dict.items()})
         metric_logger.update(**{"train_stats/lr_" + group['name']: group['lr'] for group in trainer.optimizer.param_groups})
         
-        from seongjun_tools.evaluate_3dbb_instancewise import perform_evaluation
-        camera_front_start = dataset.pixel_source.camera_front_start
-        tar_boxes = generate_boxs(
-            trainer=trainer,
-            sample_tokens=scene_sample_tokens,
-            camera_front_start=camera_front_start,
-        )
-        eval_results = perform_evaluation(
-            gt_boxes=gt_boxes,
-            tar_boxes=tar_boxes,
-            sample_tokens=scene_sample_tokens,
-            config=config,
-            nusc=nusc,
-        )
-        metric_logger.update(**{"box_eval/"+k: v for k, v in eval_results.items()})
+        # if step % cfg.logging.save_kf_box_pose_freq == 0 and step > 0:
+        if cfg.logging.wandb_box_err_freq > 0 and step % cfg.logging.wandb_box_err_freq == 0 and step > 0:
+            from seongjun_tools.evaluate_3dbb_instancewise import perform_evaluation
+            camera_front_start = dataset.pixel_source.camera_front_start
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["RigidNodes", "DeformableNodes", "SMPLNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/"+k: v for k, v in eval_results.items()})
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["RigidNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/rigid/"+k: v for k, v in eval_results.items()})
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["DeformableNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/deformable/"+k: v for k, v in eval_results.items()})
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["SMPLNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/smpl/"+k: v for k, v in eval_results.items()})
+
 
 
         if args.enable_wandb:
@@ -522,13 +575,13 @@ def generate_boxs(
     keyframe_interval: int = 5,
     camera_front_start: Optional[np.ndarray] = None,
     sample_tokens: List[str] = [],
+    target_node_types: List[str] = ["RigidNodes", "SMPLNodes", "DeformableNodes"],
 ) -> EvalBoxes:
     """Return a dict keyed by frame_idx (as str) → list of annotation dicts."""
 
     eval_boxes = EvalBoxes()
 
-    node_mappings = ["RigidNodes", "SMPLNodes", "DeformableNodes"]
-
+    node_mappings = target_node_types
 
     for node_type in node_mappings:
         if node_type not in trainer.models:

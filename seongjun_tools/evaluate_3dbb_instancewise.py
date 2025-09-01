@@ -455,7 +455,7 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
     #         metrics.add_label_tp(class_name, metric_name, tp)
     #         metrics.add_label_tp_RMSE(class_name, metric_name, rmse)
 
-    for instance_idx, (instance_token, raw_err_data, gt_boxes, tar_boxes) in instance_wise_err_data_list.items():
+    for instance_idx, (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.items():
         for metric_name in TP_METRICS:
             if metric_name not in raw_err_data:
                 tp = np.nan
