@@ -110,6 +110,22 @@ def main(args):
     cfg = setup(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    from nuscenes import NuScenes
+    from nuscenes.eval.detection.config import config_factory
+    from seongjun_tools.utils.splits import create_splits_scenes
+    from seongjun_tools.utils.loaders import load_gt
+    from seongjun_tools.utils.detection.data_classes import DetectionBox
+    from seongjun_tools.evaluate_3dbb_instancewise import _get_scene_sample_tokens_chronologically
+
+    # load nuscenes gt data
+    nusc = NuScenes(
+        version="v1.0-mini", dataroot="/workspace/drivestudio/data/nuscenes/raw", verbose=False)
+    splits = create_splits_scenes()
+    scene_name = splits['mini_trainval'][cfg.data.scene_idx]
+    scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
+    config = config_factory('detection_cvpr_2019')
+    gt_boxes, _ = load_gt(nusc, 'mini_trainval', DetectionBox, verbose=False)
+
     # build dataset
     dataset = DrivingDataset(data_cfg=cfg.data)
 
@@ -299,6 +315,24 @@ def main(args):
         metric_logger.update(**{"losses/"+k: v.item() for k, v in loss_dict.items()})
         metric_logger.update(**{"selective_losses/"+k: v.item() for k, v in selective_loss_dict.items()})
         metric_logger.update(**{"train_stats/lr_" + group['name']: group['lr'] for group in trainer.optimizer.param_groups})
+        
+        from seongjun_tools.evaluate_3dbb_instancewise import perform_evaluation
+        camera_front_start = dataset.pixel_source.camera_front_start
+        tar_boxes = generate_boxs(
+            trainer=trainer,
+            sample_tokens=scene_sample_tokens,
+            camera_front_start=camera_front_start,
+        )
+        eval_results = perform_evaluation(
+            gt_boxes=gt_boxes,
+            tar_boxes=tar_boxes,
+            sample_tokens=scene_sample_tokens,
+            config=config,
+            nusc=nusc,
+        )
+        metric_logger.update(**{"box_eval/"+k: v for k, v in eval_results.items()})
+
+
         if args.enable_wandb:
             wandb.log({k: v.avg for k, v in metric_logger.meters.items()})
 
@@ -416,7 +450,6 @@ def _transform_pose_to_world(
 
 def _extract_pose_annotations(
     trainer,
-    dataset,
     keyframe_interval: int = 5,
     camera_front_start: Optional[np.ndarray] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -445,16 +478,18 @@ def _extract_pose_annotations(
         num_frames, num_instances = trans.shape[:2]
         keyframes = range(0, num_frames, keyframe_interval)
 
-        for inst_id in range(num_instances):
-            inst_size = sizes[inst_id].tolist()
+        for inst_idx in range(num_instances):
+            inst_size = sizes[inst_idx].tolist()
             inst_size = [inst_size[1], inst_size[0], inst_size[2]]
+            pts_mask = model.point_ids[..., 0] == inst_idx
+            num_gaussians = pts_mask.sum().detach().cpu().numpy().tolist()
 
             for fi in keyframes:
-                if valid_mask[fi, inst_id] == 0:
+                if valid_mask[fi, inst_idx] == 0:
                     continue
 
-                t = trans[fi, inst_id]
-                q = quats[fi, inst_id]
+                t = trans[fi, inst_idx]
+                q = quats[fi, inst_idx]
                 if np.allclose(t, 0, atol=1e-6):
                     continue
 
@@ -467,16 +502,88 @@ def _extract_pose_annotations(
                     "translation": t_world.tolist(),
                     "rotation": q_world.tolist(),
                     "size": inst_size,
-                    "detection_name": detection_names[inst_id],
-                    "instance_token": instance_tokens[inst_id],
-                    "instance_id": true_ids[inst_id],
+                    "detection_name": detection_names[inst_idx],
+                    "instance_token": instance_tokens[inst_idx],
+                    "instance_idx": true_ids[inst_idx],
                     "node_type": node_type,
                     "confidence": 1.0,
+                    "num_gaussians": num_gaussians
                 }
 
                 results.setdefault(str(fi), []).append(ann)
 
     return results
+
+
+from nuscenes.eval.common.data_classes import EvalBoxes
+from seongjun_tools.utils.detection.data_classes import DetectionBox
+def generate_boxs(
+    trainer,
+    keyframe_interval: int = 5,
+    camera_front_start: Optional[np.ndarray] = None,
+    sample_tokens: List[str] = [],
+) -> EvalBoxes:
+    """Return a dict keyed by frame_idx (as str) → list of annotation dicts."""
+
+    eval_boxes = EvalBoxes()
+
+    node_mappings = ["RigidNodes", "SMPLNodes", "DeformableNodes"]
+
+
+    for node_type in node_mappings:
+        if node_type not in trainer.models:
+            continue
+
+        model = trainer.models[node_type]
+        trans = model.instances_trans.detach().cpu().numpy()
+        if node_type == "SMPLNodes":
+            quats = model.instances_quats.detach().cpu().numpy()[:, :, 0, :]
+        else:
+            quats = model.instances_quats.detach().cpu().numpy()
+        sizes = model.instances_size.detach().cpu().numpy()
+        valid_mask = model.instances_fv.detach().cpu().numpy()
+        detection_names = model.instances_detection_name
+        instance_tokens = model.instances_instance_token
+        true_ids = model.instances_true_id
+        
+        num_frames, num_instances = trans.shape[:2]
+        keyframes = range(0, num_frames, keyframe_interval)
+
+        for inst_idx in range(num_instances):
+            inst_size = sizes[inst_idx].tolist()
+            inst_size = [inst_size[1], inst_size[0], inst_size[2]]
+            pts_mask = model.point_ids[..., 0] == inst_idx
+            num_gaussians = pts_mask.sum().detach().cpu().numpy().tolist()
+
+            for idx, fi in enumerate(keyframes):
+                if valid_mask[fi, inst_idx] == 0:
+                    continue
+
+                t = trans[fi, inst_idx]
+                q = quats[fi, inst_idx]
+                if np.allclose(t, 0, atol=1e-6):
+                    continue
+
+                if camera_front_start is not None:
+                    t_world, q_world = _transform_pose_to_world(t, q, camera_front_start)
+                else:
+                    t_world, q_world = t, q
+
+                sample_token = sample_tokens[idx]
+                detection_box = DetectionBox(
+                        sample_token=sample_token,
+                        translation=t_world.tolist(),
+                        size=tuple(inst_size),
+                        rotation=q_world.tolist(),
+                        detection_name=detection_names[inst_idx],
+                        detection_score=-1.0,  # GT samples do not have a score.
+                        instance_token=instance_tokens[inst_idx],
+                        instance_idx=true_ids[inst_idx],
+                        num_gaussians = num_gaussians
+                    )
+                eval_boxes.add_boxes(sample_token, [detection_box])
+
+    return eval_boxes
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -497,7 +604,6 @@ def save_pose_annotations(
 
     results = _extract_pose_annotations(
         trainer,
-        dataset,
         keyframe_interval=keyframe_interval,
         camera_front_start=camera_front_start,
     )
