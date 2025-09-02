@@ -210,6 +210,7 @@ def convert_instances_to_predictions(
                 "attribute_name": "",
                 "instance_token": instance_token,
                 "instance_idx": instance_idx,
+                "num_gaussians": -1,
             }
 
             if sample_token not in results:
