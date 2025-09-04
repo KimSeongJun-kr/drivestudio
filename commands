@@ -4,7 +4,7 @@ docker build -t drivestudio:0.0.1 .
 # 2. Environment Setup
 ## Run Docker Container
 xhost +local:root
-docker run --gpus all -it --shm-size=16g \
+docker run --gpus '"device=0"' -it --shm-size=16g \
     -p 8080:8080 \
     -v "/home/aimlab/seongjun_ws/docker_ws/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
     -v "/media/aimlab/HDD02_1TB:/workspace/drivestudio/data" \
