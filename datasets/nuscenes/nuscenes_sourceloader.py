@@ -18,6 +18,31 @@ from datasets.base.pixel_source import CameraData, ScenePixelSource
 logger = logging.getLogger()
 
 # define each class's node type
+# OBJECT_CLASS_NODE_MAPPING = {
+#     # Rigid objects (vehicles)
+#     "vehicle.bus.bendy": ModelType.RigidNodes,
+#     "vehicle.bus.rigid": ModelType.RigidNodes,
+#     "vehicle.car": ModelType.RigidNodes,
+#     "vehicle.construction": ModelType.RigidNodes,
+#     "vehicle.emergency.ambulance": ModelType.RigidNodes,
+#     "vehicle.emergency.police": ModelType.RigidNodes,
+#     "vehicle.motorcycle": ModelType.RigidNodes,
+#     "vehicle.trailer": ModelType.RigidNodes,
+#     "vehicle.truck": ModelType.RigidNodes,
+
+#     # Humans (SMPL model)
+#     "human.pedestrian.adult": ModelType.SMPLNodes,
+#     "human.pedestrian.child": ModelType.SMPLNodes,
+#     "human.pedestrian.construction_worker": ModelType.SMPLNodes,
+#     "human.pedestrian.police_officer": ModelType.SMPLNodes,
+
+#     # Potentially deformable objects
+#     "human.pedestrian.personal_mobility": ModelType.DeformableNodes,
+#     "human.pedestrian.stroller": ModelType.DeformableNodes,
+#     "human.pedestrian.wheelchair": ModelType.DeformableNodes,
+#     "animal": ModelType.DeformableNodes,
+#     "vehicle.bicycle": ModelType.DeformableNodes
+# }
 OBJECT_CLASS_NODE_MAPPING = {
     # Rigid objects (vehicles)
     "vehicle.bus.bendy": ModelType.RigidNodes,
@@ -31,17 +56,17 @@ OBJECT_CLASS_NODE_MAPPING = {
     "vehicle.truck": ModelType.RigidNodes,
 
     # Humans (SMPL model)
-    "human.pedestrian.adult": ModelType.SMPLNodes,
-    "human.pedestrian.child": ModelType.SMPLNodes,
-    "human.pedestrian.construction_worker": ModelType.SMPLNodes,
-    "human.pedestrian.police_officer": ModelType.SMPLNodes,
+    "human.pedestrian.adult": ModelType.RigidNodes,
+    "human.pedestrian.child": ModelType.RigidNodes,
+    "human.pedestrian.construction_worker": ModelType.RigidNodes,
+    "human.pedestrian.police_officer": ModelType.RigidNodes,
 
     # Potentially deformable objects
-    "human.pedestrian.personal_mobility": ModelType.DeformableNodes,
-    "human.pedestrian.stroller": ModelType.DeformableNodes,
-    "human.pedestrian.wheelchair": ModelType.DeformableNodes,
-    "animal": ModelType.DeformableNodes,
-    "vehicle.bicycle": ModelType.DeformableNodes
+    "human.pedestrian.personal_mobility": ModelType.RigidNodes,
+    "human.pedestrian.stroller": ModelType.RigidNodes,
+    "human.pedestrian.wheelchair": ModelType.RigidNodes,
+    "animal": ModelType.RigidNodes,
+    "vehicle.bicycle": ModelType.RigidNodes
 }
 SMPLNODE_CLASSES = [
     "human.pedestrian.adult",

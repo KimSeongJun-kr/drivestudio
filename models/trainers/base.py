@@ -296,8 +296,12 @@ class BasicTrainer(nn.Module):
     def postprocess_per_train_step(self, step: int) -> None:
         radii = self.info["radii"]
         if self.render_cfg.absgrad:
+            if not hasattr(self.info["means2d"], "absgrad"):
+                return
             grads = self.info["means2d"].absgrad.clone()
         else:
+            if not hasattr(self.info["means2d"], "grad"):
+                return
             grads = self.info["means2d"].grad.clone()
         grads[..., 0] *= self.info["width"] / 2.0 * self.render_cfg.batch_size
         grads[..., 1] *= self.info["height"] / 2.0 * self.render_cfg.batch_size
@@ -798,40 +802,71 @@ class BasicTrainer(nn.Module):
             # in the case of egocar, we need to mask out the egocar region
             valid_loss_mask = (1.0 - image_infos["egocar_masks"]).float()
         else:
-            valid_loss_mask = torch.ones_like(image_infos["sky_masks"])
+            valid_loss_mask = torch.ones_like(image_infos["pixels"][..., 0])
+            
+        # if "Dynamic_opacity" in outputs:
+        #     dynamic_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
+        #     dynamic_mask = image_infos["dynamic_masks"].bool() | dynamic_mask
+        # else:
+        #     dynamic_mask = image_infos["dynamic_masks"].bool()
+            # print("no dynamic opacity in outputs")
+        dynamic_mask = image_infos["dynamic_masks"].bool()
+
+        if self.dataset.data_cfg.pixel_source.only_dynamic:
+            # valid_loss_mask = valid_loss_mask * image_infos["dynamic_masks"]
+            # dynamic_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
+            # dynamic_mask = dynamic_mask & valid_loss_mask.bool()
+            valid_loss_mask = valid_loss_mask * dynamic_mask.bool()
+            
+            if valid_loss_mask.sum() == 0:
+                return loss_dict, selective_loss_dict
             
         gt_rgb = image_infos["pixels"] * valid_loss_mask[..., None]
         predicted_rgb = outputs["rgb"] * valid_loss_mask[..., None]
-        
-        gt_occupied_mask = (1.0 - image_infos["sky_masks"]).float() * valid_loss_mask
-        pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
-        
-        # rgb loss
-        # rgb_loss = self.losses_dict.get("rgb", None)
-        # if rgb_loss is not None and "rgb" in outputs and outputs["rgb"] is not None:
-        #     Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
-        #     if not torch.isnan(Ll1).any():
-        #         loss_dict.update({
-        #             "rgb_loss": self.losses_dict.rgb.w * Ll1,
-        #         })
 
-        # ssim_loss = self.losses_dict.get("ssim", None)
-        # if ssim_loss is not None and "rgb" in outputs and outputs["rgb"] is not None:
-        #     Lssim = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
-        #     if not torch.isnan(Lssim).any():
-        #         loss_dict.update({
-        #             "ssim_loss": self.losses_dict.ssim.w * Lssim,
-        #         })
-        Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
-        simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
-        if not torch.isnan(Ll1).any() and not torch.isnan(simloss).any():
-            loss_dict.update({
-                "rgb_loss": self.losses_dict.rgb.w * Ll1,
-                "ssim_loss": self.losses_dict.ssim.w * simloss,
-            })
+        # save gt and predicted rgb for debugging (optional)
+        try:
+            if self.step % 1000 == 0:
+                # resolve save directory
+                log_dir = "/workspace/drivestudio/output/tmp/" + time.strftime("%Y%m%d_%H")
+                images_dir = os.path.join(log_dir, "images")
+                os.makedirs(images_dir, exist_ok=True)
+
+                # tensors: [H, W, 3] in [0,1]
+                def _to_uint8_img(t: torch.Tensor) -> np.ndarray:
+                    t = torch.clamp(t, 0.0, 1.0).detach().cpu().numpy()
+                    t = (t * 255.0).round().astype(np.uint8)
+                    return t
+
+                gt_img = _to_uint8_img(image_infos["pixels"])
+                gt_mask_img = _to_uint8_img(gt_rgb)
+                pred_img = _to_uint8_img(outputs["rgb"])
+                pred_mask_img = _to_uint8_img(predicted_rgb)
+
+                # save as PNG
+                from PIL import Image
+                Image.fromarray(gt_img).save(os.path.join(images_dir, f"step_{self.step:05d}_gt.png"))
+                Image.fromarray(gt_mask_img).save(os.path.join(images_dir, f"step_{self.step:05d}_gt_mask.png"))
+                Image.fromarray(pred_img).save(os.path.join(images_dir, f"step_{self.step:05d}_pred.png"))
+                Image.fromarray(pred_mask_img).save(os.path.join(images_dir, f"step_{self.step:05d}_pred_mask.png"))
+        except Exception as _:
+            pass
+        
+        
+        rgb = self.losses_dict.get("rgb", None)        
+        if rgb is not None:
+            Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
+            simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
+            if not torch.isnan(Ll1).any() and not torch.isnan(simloss).any():
+                loss_dict.update({
+                    "rgb_loss": self.losses_dict.rgb.w * Ll1,
+                    "ssim_loss": self.losses_dict.ssim.w * simloss,
+                })
 
         # mask loss
         if self.sky_opacity_loss_fn is not None:
+            gt_occupied_mask = (1.0 - image_infos["sky_masks"]).float() * valid_loss_mask
+            pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
             sky_loss_opacity = self.sky_opacity_loss_fn(pred_occupied_mask, gt_occupied_mask) * self.losses_dict.mask.w
             if not torch.isnan(sky_loss_opacity).any():
                 loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
@@ -883,9 +918,9 @@ class BasicTrainer(nn.Module):
             
             # 2. 라이다 포인트를 현재 카메라 이미지에 투영해서 동적 객체 필터링
             dynamic_lidar_points = None
-            if "dynamic_masks" in image_infos and lidar_points_world.shape[0] > 0:
+            if dynamic_mask is not None and lidar_points_world.shape[0] > 0:
                 dynamic_lidar_points = self.get_points_on_instances(
-                                                dynamic_mask=image_infos["dynamic_masks"], 
+                                                dynamic_mask=dynamic_mask, 
                                                 intrinsics=cam_infos["intrinsics"], 
                                                 cam_to_world=cam_infos["camera_to_world"], 
                                                 lidar_points_world=lidar_points_world)
@@ -936,25 +971,22 @@ class BasicTrainer(nn.Module):
                 })
 
         # dynamic region loss
-        # dynamic_region = self.losses_dict.get("dynamic_region", None)
-        # if dynamic_region is not None:
-        #     if self.step == dynamic_region.start_from:
-        #         self.render_dynamic_mask = True
-        #     if self.step > dynamic_region.start_from and "Dynamic_opacity" in outputs:
-        #         dynamic_pred_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
-        #         dynamic_pred_mask = dynamic_pred_mask & valid_loss_mask.bool()
-                
-        #         if dynamic_pred_mask.sum() > 0:
-        #             dynamic_gt_rgb = gt_rgb * image_infos["dynamic_masks"][..., None]
-        #             dynamic_pred_rgb = predicted_rgb * dynamic_pred_mask[..., None]
+        dynamic_region = self.losses_dict.get("dynamic_region", None)
+        if dynamic_region is not None:
+            if self.step == dynamic_region.start_from:
+                self.render_dynamic_mask = True
+            if self.step > dynamic_region.start_from and "Dynamic_opacity" in outputs:               
+                if dynamic_mask.sum() > 0:
+                    dynamic_gt_rgb = gt_rgb * dynamic_mask[..., None]
+                    dynamic_pred_rgb = predicted_rgb * dynamic_mask[..., None]
 
-        #             Ll1 = torch.abs(dynamic_gt_rgb - dynamic_pred_rgb).mean()
-        #             Lssim = 1 - self.ssim(dynamic_gt_rgb.permute(2, 0, 1)[None, ...], dynamic_pred_rgb.permute(2, 0, 1)[None, ...])
-        #             if not torch.isnan(Ll1).any():
-        #                 loss_dict.update({
-        #                     "vehicle_region_rgb_loss": dynamic_region.rgb_w * Ll1,
-        #                     "vehicle_region_ssim_loss": dynamic_region.ssim_w * Lssim,
-        #                 })
+                    Ll1 = torch.abs(dynamic_gt_rgb - dynamic_pred_rgb).mean()
+                    Lssim = 1 - self.ssim(dynamic_gt_rgb.permute(2, 0, 1)[None, ...], dynamic_pred_rgb.permute(2, 0, 1)[None, ...])
+                    if not torch.isnan(Ll1).any():
+                        loss_dict.update({
+                            "dynamic_region_rgb_loss": dynamic_region.rgb_w * Ll1,
+                            "dynamic_region_ssim_loss": dynamic_region.ssim_w * Lssim,
+                        })
             
         # compute gaussian reg loss
         for class_name in self.gaussian_classes.keys():
