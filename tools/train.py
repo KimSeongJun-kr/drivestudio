@@ -623,7 +623,7 @@ def generate_boxs(
                     t_world, q_world = t, q
 
                 sample_token = sample_tokens[idx]
-                if detection_names[inst_idx] is 'human.pedestrian.personal_mobility':
+                if detection_names[inst_idx] == 'human.pedestrian.personal_mobility':
                     continue
                 detection_box = DetectionBox(
                         sample_token=sample_token,
