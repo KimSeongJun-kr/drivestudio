@@ -578,7 +578,10 @@ class BasicTrainer(nn.Module):
     def backward(self, loss_dict: Dict[str, torch.Tensor], selective_loss_dict: Dict[str, torch.Tensor] = None) -> None:
         # ----------------- backward ----------------
         total_loss = sum(loss for loss in loss_dict.values())
-        self.grad_scaler.scale(total_loss).backward()
+        
+        # total_loss가 빈 딕셔너리 합계인 0(int)이 아니라 유효한 Tensor일 경우에만 backward 수행
+        if isinstance(total_loss, torch.Tensor):
+            self.grad_scaler.scale(total_loss).backward()
         
         # selective loss에 대한 backward 처리 (특정 파라미터에만 적용)
         if selective_loss_dict:
@@ -804,18 +807,15 @@ class BasicTrainer(nn.Module):
         else:
             valid_loss_mask = torch.ones_like(image_infos["pixels"][..., 0])
             
-        # if "Dynamic_opacity" in outputs:
-        #     dynamic_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
-        #     dynamic_mask = image_infos["dynamic_masks"].bool() | dynamic_mask
-        # else:
-        #     dynamic_mask = image_infos["dynamic_masks"].bool()
-            # print("no dynamic opacity in outputs")
-        dynamic_mask = image_infos["dynamic_masks"].bool()
-
-        if self.dataset.data_cfg.pixel_source.only_dynamic:
-            # valid_loss_mask = valid_loss_mask * image_infos["dynamic_masks"]
-            # dynamic_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
-            # dynamic_mask = dynamic_mask & valid_loss_mask.bool()
+        dynamic_region = self.losses_dict.get("dynamic_region", None)
+        opacity_threshold = dynamic_region.get("opacity_threshold", None)
+        if dynamic_region is not None and "Dynamic_opacity" in outputs and opacity_threshold is not None:
+            dynamic_mask = (outputs["Dynamic_opacity"].data > opacity_threshold).squeeze()
+            dynamic_mask = image_infos["dynamic_masks"].bool() | dynamic_mask
+        else:
+            dynamic_mask = image_infos["dynamic_masks"].bool()            
+            
+        if self.dataset.data_cfg.pixel_source.only_dynamic:                
             valid_loss_mask = valid_loss_mask * dynamic_mask.bool()
             
             if valid_loss_mask.sum() == 0:
