@@ -99,7 +99,8 @@ def accumulate(gt_boxes: EvalBoxes,
                   'scale_err': [],
                   'orient_err': [],
                   'attr_err': [],
-                  'dist': []}
+                  'dist': [],
+                  'sample_tokens': []}
 
     # ---------------------------------------------
     # Match and accumulate match data.
@@ -139,7 +140,7 @@ def accumulate(gt_boxes: EvalBoxes,
 
                 match_data['attr_err'].append(1 - attr_acc(gt_box_match, pred_box))
                 match_data['dist'].append(pred_box.ego_dist)
-
+                match_data['sample_tokens'].append(pred_box.sample_token)
         else:
             # No match. Mark this as a false positive.
             tp.append(0)
@@ -180,7 +181,7 @@ def accumulate(gt_boxes: EvalBoxes,
 
     match_data_copy = copy.deepcopy(match_data)
     for key in match_data.keys():
-        if key == "dist":
+        if key == "dist" or key == "sample_tokens":
             continue  # Distance is used as reference to align with fp and tp. So skip in this step.
 
         else:
@@ -300,7 +301,8 @@ def extract_boxes_from_json_to_evalboxes(json_path: str, sample_tokens: List[str
                         detection_score=box.get('detection_score', 0.5),
                         attribute_name=box.get('attribute_name', ''),
                         instance_token=box.get('instance_token', ''),
-                        instance_idx=box.get('instance_idx', -1)
+                        instance_idx=box.get('instance_idx', -1),
+                        num_gaussians=box.get('num_gaussians', -1)
                     )
                     detection_boxes.append(detection_box)
                 except Exception as e:
@@ -375,7 +377,6 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
     }    
     key_name_mapping = {ModelType.RigidNodes: 'RigidNodes', ModelType.DeformableNodes: 'DeformableNodes', ModelType.SMPLNodes: 'SMPLNodes'}
 
-    tmp_idx = 0
     for instance_token in instance_wise_tar_boxes.keys():
         tar_boxes_instance = instance_wise_tar_boxes[instance_token]
         if instance_token not in instance_wise_gt_boxes:
@@ -394,9 +395,7 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
             if f in raw_err_data:
                 class_wise_err_data_list[tar_boxes_instance.all[0].detection_name][f].extend(raw_err_data[f])
 
-        # instance_idx = tar_boxes.all[0].instance_idx
-        instance_idx = tmp_idx
-        tmp_idx += 1
+        instance_idx = tar_boxes_instance.all[0].instance_idx
         instance_wise_metric_data_list.set(str(instance_idx), dist_th, metric_data)
         instance_wise_err_data_list[instance_idx] = (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance)
 
@@ -491,7 +490,7 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
         instance_wise_frame_err_data = {}
         for instance_idx, (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.items():
             frames = []
-            for sample_token in tar_boxes_instance.sample_tokens:
+            for sample_token in raw_err_data['sample_tokens']:
                 sample_idx = sample_tokens.index(sample_token)
                 frames.append(sample_idx * 5)
 
@@ -504,8 +503,9 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
                 'attr_err': raw_err_data['attr_err'],
                 'dist': raw_err_data['dist'],
                 'instance_token': instance_token,
-                'instance_idx': instance_idx,
-                'num_gaussians': tar_boxes_instance.all[0].num_gaussians
+                'instance_idx': int(instance_idx),
+                'num_gaussians': tar_boxes_instance.all[0].num_gaussians,
+                'detection_name': tar_boxes_instance.all[0].detection_name,
             }
         with open(os.path.join(output_dir, 'instance_wise_frame_err_data.json'), 'w') as f:
             json.dump(instance_wise_frame_err_data, f, indent=2)
@@ -570,6 +570,37 @@ def parse_metrics_json(metrics_path: str, target_iteration: int) -> Dict[str, Op
     
     return result
 
+def match_boxes(tar_boxes: EvalBoxes, src_boxes: EvalBoxes) -> EvalBoxes:
+    """target_boxes와 일치하는 sample_token과 instance_token을 가진 ctrl_boxes만 골라냅니다.
+    
+    Args:
+        tar_boxes: 기준이 되는 박스들
+        src_boxes: 매칭할 박스들
+        
+    Returns:
+        tar_boxes와 매칭되는 src_boxes 포함한 EvalBoxes 객체
+    """
+    matched_boxes = EvalBoxes()
+    
+    # target_boxes의 각 sample_token과 instance_token 조합을 수집
+    target_combinations = set()
+    for sample_token in tar_boxes.sample_tokens:
+        for box in tar_boxes[sample_token]:
+            target_combinations.add((sample_token, box.instance_token))
+    
+    # ctrl_boxes에서 매칭되는 박스들만 선택
+    for sample_token in src_boxes.sample_tokens:
+        matched_boxes_for_sample = []
+        for box in src_boxes[sample_token]:
+            if (sample_token, box.instance_token) in target_combinations:
+                matched_boxes_for_sample.append(box)
+        
+        # 매칭된 박스가 있는 경우에만 추가
+        if matched_boxes_for_sample:
+            matched_boxes.add_boxes(sample_token, matched_boxes_for_sample)
+    
+    return matched_boxes
+
 def create_instances_wise_dicts(boxes: EvalBoxes, sample_tokens: List[str]) -> Dict[str, EvalBoxes]:
     instances_boxes: Dict[str, EvalBoxes] = {}
     for sample_token in sample_tokens:
@@ -601,7 +632,7 @@ def main() -> None:
     parser.add_argument(
         "--tar",
         type=str,
-        default='/workspace/drivestudio/output/box_experiments_0825',
+        default='/workspace/drivestudio/output/box_experiments_0826',
         help="Directory to search for target files",
     )
     parser.add_argument(
@@ -702,13 +733,6 @@ def main() -> None:
         if args.verbose:
             print(f"\n📊 Processing: {target_file}")
         
-        # Get common sample tokens from gt and compare
-        common_samples_gt_ctrl = list(set(gt_boxes.sample_tokens).intersection(set(ctrl_boxes.sample_tokens)))
-        
-        if not common_samples_gt_ctrl:
-            print(f"❌ No common sample tokens found for {target_file}")
-            continue
-        
         # Extract boxes from JSON file
         target_boxes = extract_boxes_from_json_to_evalboxes(target_file, scene_sample_tokens)
         if args.verbose:
@@ -730,7 +754,9 @@ def main() -> None:
         eval_results = perform_evaluation(gt_boxes, target_boxes, scene_sample_tokens, config, nusc, target_file)
         if args.verbose:
             print(f"\n    Performing control evaluation...")
-        ctrl_eval_results = perform_evaluation(gt_boxes, ctrl_boxes, scene_sample_tokens, config, nusc, args.ctrl)
+
+        ctrl_boxes_matched = match_boxes(target_boxes, ctrl_boxes)
+        ctrl_eval_results = perform_evaluation(gt_boxes, ctrl_boxes_matched, scene_sample_tokens, config, nusc, args.ctrl)
 
         # Store results
         # Get parent directory name (1st level up from file)

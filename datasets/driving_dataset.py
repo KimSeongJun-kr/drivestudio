@@ -614,8 +614,8 @@ class DrivingDataset(SceneDataset):
         for t in range(self.num_img_timesteps):
             if t in train_timesteps:
                 for cam in range(self.pixel_source.num_cams):
-                    # if self.data_cfg.pixel_source.only_dynamic and not self.pixel_source.camera_data[cam].dynamic_masks[t].any():
-                    #     continue
+                    if self.data_cfg.pixel_source.only_dynamic and not self.pixel_source.camera_data[cam].dynamic_masks[t].any():
+                        continue
                     train_indices.append(t * self.pixel_source.num_cams + cam)
             elif t in test_timesteps:
                 for cam in range(self.pixel_source.num_cams):
