@@ -101,7 +101,7 @@ model:
   RigidNodes:
     type: models.nodes.RigidNodes
     init:
-      instance_max_pts: 5000 # max initial points for each instance
+      instance_max_pts: 50000 # max initial points for each instance
       only_moving: false # only optimize moving instances
       traj_length_thres: 1.0 # threshold of trajectory length for moving instances
     ctrl:

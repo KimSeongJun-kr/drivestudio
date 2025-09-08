@@ -808,9 +808,8 @@ class BasicTrainer(nn.Module):
             valid_loss_mask = torch.ones_like(image_infos["pixels"][..., 0])
             
         dynamic_region = self.losses_dict.get("dynamic_region", None)
-        opacity_threshold = dynamic_region.get("opacity_threshold", None)
-        if dynamic_region is not None and "Dynamic_opacity" in outputs and opacity_threshold is not None:
-            dynamic_mask = (outputs["Dynamic_opacity"].data > opacity_threshold).squeeze()
+        if dynamic_region is not None and "Dynamic_opacity" in outputs and hasattr(dynamic_region, "opacity_threshold"):
+            dynamic_mask = (outputs["Dynamic_opacity"].data > dynamic_region.opacity_threshold).squeeze()
             dynamic_mask = image_infos["dynamic_masks"].bool() | dynamic_mask
         else:
             dynamic_mask = image_infos["dynamic_masks"].bool()            
