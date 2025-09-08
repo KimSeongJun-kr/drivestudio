@@ -324,7 +324,7 @@ def main() -> None:
     nusc = NuScenes(
         version=args.version, dataroot=args.dataroot, verbose=args.verbose)
     eval_set_map = {
-        'v1.0-mini': 'mini_val',
+        'v1.0-mini': 'mini_trainval',
         'v1.0-trainval': 'val',
     }
     

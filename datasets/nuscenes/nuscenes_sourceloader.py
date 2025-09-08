@@ -18,6 +18,31 @@ from datasets.base.pixel_source import CameraData, ScenePixelSource
 logger = logging.getLogger()
 
 # define each class's node type
+# OBJECT_CLASS_NODE_MAPPING = {
+#     # Rigid objects (vehicles)
+#     "vehicle.bus.bendy": ModelType.RigidNodes,
+#     "vehicle.bus.rigid": ModelType.RigidNodes,
+#     "vehicle.car": ModelType.RigidNodes,
+#     "vehicle.construction": ModelType.RigidNodes,
+#     "vehicle.emergency.ambulance": ModelType.RigidNodes,
+#     "vehicle.emergency.police": ModelType.RigidNodes,
+#     "vehicle.motorcycle": ModelType.RigidNodes,
+#     "vehicle.trailer": ModelType.RigidNodes,
+#     "vehicle.truck": ModelType.RigidNodes,
+
+#     # Humans (SMPL model)
+#     "human.pedestrian.adult": ModelType.SMPLNodes,
+#     "human.pedestrian.child": ModelType.SMPLNodes,
+#     "human.pedestrian.construction_worker": ModelType.SMPLNodes,
+#     "human.pedestrian.police_officer": ModelType.SMPLNodes,
+
+#     # Potentially deformable objects
+#     "human.pedestrian.personal_mobility": ModelType.DeformableNodes,
+#     "human.pedestrian.stroller": ModelType.DeformableNodes,
+#     "human.pedestrian.wheelchair": ModelType.DeformableNodes,
+#     "animal": ModelType.DeformableNodes,
+#     "vehicle.bicycle": ModelType.DeformableNodes
+# }
 OBJECT_CLASS_NODE_MAPPING = {
     # Rigid objects (vehicles)
     "vehicle.bus.bendy": ModelType.RigidNodes,
@@ -31,17 +56,17 @@ OBJECT_CLASS_NODE_MAPPING = {
     "vehicle.truck": ModelType.RigidNodes,
 
     # Humans (SMPL model)
-    "human.pedestrian.adult": ModelType.SMPLNodes,
-    "human.pedestrian.child": ModelType.SMPLNodes,
-    "human.pedestrian.construction_worker": ModelType.SMPLNodes,
-    "human.pedestrian.police_officer": ModelType.SMPLNodes,
+    "human.pedestrian.adult": ModelType.RigidNodes,
+    "human.pedestrian.child": ModelType.RigidNodes,
+    "human.pedestrian.construction_worker": ModelType.RigidNodes,
+    "human.pedestrian.police_officer": ModelType.RigidNodes,
 
     # Potentially deformable objects
-    "human.pedestrian.personal_mobility": ModelType.DeformableNodes,
-    "human.pedestrian.stroller": ModelType.DeformableNodes,
-    "human.pedestrian.wheelchair": ModelType.DeformableNodes,
-    "animal": ModelType.DeformableNodes,
-    "vehicle.bicycle": ModelType.DeformableNodes
+    "human.pedestrian.personal_mobility": ModelType.RigidNodes,
+    "human.pedestrian.stroller": ModelType.RigidNodes,
+    "human.pedestrian.wheelchair": ModelType.RigidNodes,
+    "animal": ModelType.RigidNodes,
+    "vehicle.bicycle": ModelType.RigidNodes
 }
 SMPLNODE_CLASSES = [
     "human.pedestrian.adult",
@@ -235,6 +260,7 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_true_id = np.arange(num_instances)
         instances_model_types = np.ones(num_instances) * -1
         instances_detection_name = np.empty(num_instances, dtype=object)
+        instances_instance_token = np.empty(num_instances, dtype=object)
         detection_mapping = {
             'movable_object.barrier': 'barrier',
             'vehicle.bicycle': 'bicycle',
@@ -262,6 +288,7 @@ class NuScenesPixelSource(ScenePixelSource):
                 instances_detection_name[int(k)] = detection_mapping[v["class_name"]]
             else:
                 instances_detection_name[int(k)] = v["class_name"]
+            instances_instance_token[int(k)] = v["id"]
             
             for frame_idx, obj_to_world, box_size in zip(v["frame_annotations"]["frame_idx"], v["frame_annotations"]["obj_to_world"], v["frame_annotations"]["box_size"]):
                 # the first ego pose as the origin of the world coordinate system.
@@ -291,6 +318,7 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_model_types = instances_model_types[ins_frame_cnt > 0]
         per_frame_instance_mask = per_frame_instance_mask[:, ins_frame_cnt > 0]
         instances_detection_name = instances_detection_name[ins_frame_cnt > 0]
+        instances_instance_token = instances_instance_token[ins_frame_cnt > 0]  
         
         # assign to the class
         # (num_frames, num_instances, 4, 4)
@@ -305,7 +333,8 @@ class NuScenesPixelSource(ScenePixelSource):
         self.instances_model_types = instances_model_types
         # (num_instances) original string class names
         self.instances_detection_name = instances_detection_name
-
+        # (num_instances) original instance token
+        self.instances_instance_token = instances_instance_token
         if self.data_cfg.load_smpl:
             # Collect camera-to-world matrices for all available cameras
             cam_to_worlds = {}

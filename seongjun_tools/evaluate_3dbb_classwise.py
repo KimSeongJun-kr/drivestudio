@@ -1,4 +1,5 @@
 import argparse
+import copy
 import numpy as np
 import tqdm
 from typing import List, Dict, Optional
@@ -10,20 +11,203 @@ import glob
 import pandas as pd
 from pathlib import Path
 import re
+from typing import Callable, Tuple
 
 from nuscenes import NuScenes
 from nuscenes.eval.detection.config import config_factory
-from nuscenes.eval.detection.data_classes import DetectionBox, DetectionMetricDataList, DetectionMetrics
+from nuscenes.eval.detection.data_classes import DetectionBox, DetectionMetricDataList, DetectionMetrics, DetectionMetricData
 from nuscenes.eval.detection.algo import calc_ap
 from nuscenes.eval.detection.constants import TP_METRICS
+from nuscenes.eval.tracking.data_classes import TrackingBox
 from nuscenes.eval.common.data_classes import EvalBoxes
 from nuscenes.eval.common.loaders import load_prediction, add_center_dist
+from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
+
+
 
 # Import functions from other modules
 import sys
 sys.path.append('/workspace/drivestudio')
 from seongjun_tools.generate_selected_instances import correspondence, filter_boxes_by_common_scenes
-from seongjun_tools.evaluate_3dbb import accumulate, filter_eval_boxes, load_gt, filter_boxes_by_scene
+from seongjun_tools.evaluate_3dbb import filter_eval_boxes, load_gt, filter_boxes_by_scene
+from datasets.nuscenes.nuscenes_sourceloader import OBJECT_CLASS_NODE_MAPPING
+from datasets.base.scene_dataset import ModelType
+
+detection_mapping = {
+    'movable_object.barrier': 'barrier',
+    'vehicle.bicycle': 'bicycle',
+    'vehicle.bus.bendy': 'bus',
+    'vehicle.bus.rigid': 'bus',
+    'vehicle.car': 'car',
+    'vehicle.construction': 'construction_vehicle',
+    'vehicle.motorcycle': 'motorcycle',
+    'human.pedestrian.adult': 'pedestrian',
+    'human.pedestrian.child': 'pedestrian',
+    'human.pedestrian.construction_worker': 'pedestrian',
+    'human.pedestrian.police_officer': 'pedestrian',
+    'movable_object.trafficcone': 'traffic_cone',
+    'vehicle.trailer': 'trailer',
+    'vehicle.truck': 'truck'
+}
+detection_mapping_inv = {v: k for k, v in detection_mapping.items()}
+
+def accumulate(gt_boxes: EvalBoxes,
+               pred_boxes: EvalBoxes,
+               class_name: str,
+               dist_fcn: Callable,
+               dist_th: float,
+               verbose: bool = False) -> Tuple[DetectionMetricData, Dict[str, List[float]]]:
+    """
+    Average Precision over predefined different recall thresholds for a single distance threshold.
+    The recall/conf thresholds and other raw metrics will be used in secondary metrics.
+    :param gt_boxes: Maps every sample_token to a list of its sample_annotations.
+    :param pred_boxes: Maps every sample_token to a list of its sample_results.
+    :param class_name: Class to compute AP on.
+    :param dist_fcn: Distance function used to match detections and ground truths.
+    :param dist_th: Distance threshold for a match.
+    :param verbose: If true, print debug messages.
+    :return: (average_prec, metrics). The average precision value and raw data for a number of metrics.
+    """
+    # ---------------------------------------------
+    # Organize input and initialize accumulators.
+    # ---------------------------------------------
+
+    # Count the positives.
+    npos = len([1 for gt_box in gt_boxes.all if gt_box.detection_name == class_name])
+    if verbose:
+        print("Found {} GT of class {} out of {} total across {} samples.".
+              format(npos, class_name, len(gt_boxes.all), len(gt_boxes.sample_tokens)))
+
+    # For missing classes in the GT, return a data structure corresponding to no predictions.
+    if npos == 0:
+        return DetectionMetricData.no_predictions(), {}
+
+    # Organize the predictions in a single list.
+    pred_boxes_list = [box for box in pred_boxes.all if box.detection_name == class_name]
+    pred_confs = [box.detection_score for box in pred_boxes_list]
+
+    if verbose:
+        print("Found {} PRED of class {} out of {} total across {} samples.".
+              format(len(pred_confs), class_name, len(pred_boxes.all), len(pred_boxes.sample_tokens)))
+
+    # Sort by confidence.
+    sortind = [i for (v, i) in sorted((v, i) for (i, v) in enumerate(pred_confs))][::-1]
+
+    # Do the actual matching.
+    tp = []  # Accumulator of true positives.
+    fp = []  # Accumulator of false positives.
+    conf = []  # Accumulator of confidences.
+
+    # match_data holds the extra metrics we calculate for each match.
+    match_data = {'trans_err': [],
+                  'vel_err': [],
+                  'scale_err': [],
+                  'orient_err': [],
+                  'attr_err': [],
+                  'conf': []}
+
+    # ---------------------------------------------
+    # Match and accumulate match data.
+    # ---------------------------------------------
+
+    taken = set()  # Initially no gt bounding box is matched.
+    match_pred_boxes = defaultdict(list)
+
+    for ind in sortind:
+        pred_box = pred_boxes_list[ind]
+        min_dist = np.inf
+        match_gt_idx = None
+
+        for gt_idx, gt_box in enumerate(gt_boxes[pred_box.sample_token]):
+
+            # Find closest match among ground truth boxes
+            if gt_box.detection_name == class_name and not (pred_box.sample_token, gt_idx) in taken:
+                this_distance = dist_fcn(gt_box, pred_box)
+                if this_distance < min_dist:
+                    min_dist = this_distance
+                    match_gt_idx = gt_idx
+
+        # If the closest match is close enough according to threshold we have a match!
+        is_match = min_dist < dist_th
+
+        if is_match:
+            taken.add((pred_box.sample_token, match_gt_idx))
+
+            #  Update tp, fp and confs.
+            tp.append(1)
+            fp.append(0)
+            conf.append(pred_box.detection_score)
+
+            # Since it is a match, update match data also.
+            if match_gt_idx is not None:
+                gt_box_match = gt_boxes[pred_box.sample_token][match_gt_idx]
+
+                match_data['trans_err'].append(center_distance(gt_box_match, pred_box))
+                match_data['vel_err'].append(velocity_l2(gt_box_match, pred_box))
+                match_data['scale_err'].append(1 - scale_iou(gt_box_match, pred_box))
+
+                # Barrier orientation is only determined up to 180 degree. (For cones orientation is discarded later)
+                period = np.pi if class_name == 'barrier' else 2 * np.pi
+                match_data['orient_err'].append(yaw_diff(gt_box_match, pred_box, period=period))
+
+                match_data['attr_err'].append(1 - attr_acc(gt_box_match, pred_box))
+                match_data['conf'].append(pred_box.detection_score)
+
+        else:
+            # No match. Mark this as a false positive.
+            tp.append(0)
+            fp.append(1)
+            conf.append(pred_box.detection_score)
+
+    # Check if we have any matches. If not, just return a "no predictions" array.
+    if len(match_data['trans_err']) == 0:
+        return DetectionMetricData.no_predictions(), {}
+
+    # ---------------------------------------------
+    # Calculate and interpolate precision and recall
+    # ---------------------------------------------
+
+    # Accumulate.
+    tp = np.cumsum(tp).astype(float)
+    fp = np.cumsum(fp).astype(float)
+    conf = np.array(conf)
+
+    # Calculate precision and recall.
+    prec = tp / (fp + tp)
+    rec = tp / float(npos)
+
+    rec_interp = np.linspace(0, 1, DetectionMetricData.nelem)  # 101 steps, from 0% to 100% recall.
+    prec = np.interp(rec_interp, rec, prec, right=0)
+    conf = np.interp(rec_interp, rec, conf, right=0)
+    rec = rec_interp
+
+    # ---------------------------------------------
+    # Re-sample the match-data to match, prec, recall and conf.
+    # ---------------------------------------------
+
+    match_data_copy = copy.deepcopy(match_data)
+    for key in match_data.keys():
+        if key == "conf":
+            continue  # Confidence is used as reference to align with fp and tp. So skip in this step.
+
+        else:
+            # For each match_data, we first calculate the accumulated mean.
+            tmp = cummean(np.array(match_data[key]))
+
+            # Then interpolate based on the confidences. (Note reversing since np.interp needs increasing arrays)
+            match_data[key] = np.interp(conf[::-1], match_data['conf'][::-1], tmp[::-1])[::-1]
+
+    # ---------------------------------------------
+    # Done. Instantiate MetricData and return
+    # ---------------------------------------------
+    return DetectionMetricData(recall=rec,
+                               precision=prec,
+                               confidence=conf,
+                               trans_err=match_data['trans_err'],
+                               vel_err=match_data['vel_err'],
+                               scale_err=match_data['scale_err'],
+                               orient_err=match_data['orient_err'],
+                               attr_err=match_data['attr_err']), match_data_copy
 
 def _get_scene_sample_tokens_chronologically(nusc: 'NuScenes', scene_name: str) -> List[str]:
     """Scene의 sample_tokens를 시간순으로 가져옵니다."""
@@ -157,7 +341,7 @@ def find_files_with_name(directory: str, filename: str) -> List[str]:
 
 
 def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
-                      config, nusc: NuScenes) -> Dict[str, float]:
+                      config, nusc: NuScenes, target_path: str) -> Dict[str, float]:
     """3D 바운딩 박스 평가를 수행합니다.
     
     Args:
@@ -182,41 +366,88 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
     metric_data_list = DetectionMetricDataList()
     dist_th = 1.0
     
-    md, match_data_copy = accumulate(
-        gt_boxes, tar_boxes, config.dist_fcn_callable, dist_th
-    )
-    
-    metric_data_list.set('all', dist_th, md)
-    
+    match_data_list = {}
+    fields = ('trans_err', 'vel_err', 'scale_err', 'orient_err', 'attr_err', 'conf')
+    node_match_data_list = {
+        name: {f: [] for f in fields}
+        for name in ('RigidNodes', 'DeformableNodes', 'SMPLNodes')
+    }    
+    key_name_mapping = {ModelType.RigidNodes: 'RigidNodes', ModelType.DeformableNodes: 'DeformableNodes', ModelType.SMPLNodes: 'SMPLNodes'}
+    for class_name in config.class_names:
+        md, match_data_copy = accumulate(gt_boxes, tar_boxes, class_name, config.dist_fcn_callable, dist_th)
+        metric_data_list.set(class_name, dist_th, md)
+        match_data_list[class_name] = match_data_copy
+
+        inv_key = detection_mapping_inv.get(class_name)
+        if inv_key is not None and inv_key in OBJECT_CLASS_NODE_MAPPING:
+            node_type = OBJECT_CLASS_NODE_MAPPING[inv_key]
+            if node_type in (ModelType.RigidNodes, ModelType.DeformableNodes, ModelType.SMPLNodes):
+                bucket = node_match_data_list[key_name_mapping[node_type]]
+                for f in fields:
+                    if f in match_data_copy:
+                        bucket[f].extend(match_data_copy[f])
+
     # Calculate metrics
     metrics = DetectionMetrics(config)
+    for class_name in config.class_names:
+        # Compute APs.
+        metric_data = metric_data_list[(class_name, dist_th)]
+        ap = calc_ap(metric_data, config.min_recall, config.min_precision)
+        metrics.add_label_ap(class_name, dist_th, ap)
+
+        # Compute TP metrics.
+        for metric_name in TP_METRICS:
+            if class_name in ['traffic_cone'] and metric_name in ['attr_err', 'vel_err', 'orient_err']:
+                tp = np.nan
+            elif class_name in ['barrier'] and metric_name in ['attr_err', 'vel_err']:
+                tp = np.nan
+            elif metric_name not in match_data_list[class_name]:
+                tp = np.nan
+            else:
+                # metric_data = metric_data_list[(class_name, config.dist_th_tp)]
+                # tp = calc_tp(metric_data, config.min_recall, metric_name)
+                tp = float(np.mean(match_data_list[class_name][metric_name]))
+            metrics.add_label_tp(class_name, metric_name, tp)
     
-    # Compute AP
-    metric_data = metric_data_list[('all', dist_th)]
-    ap = calc_ap(metric_data, config.min_recall, config.min_precision)
-    metrics.add_label_ap('all', dist_th, ap)
-    
-    # Compute TP metrics
-    tp_metrics = {}
-    for metric_name in TP_METRICS:
-        tp = float(np.mean(match_data_copy[metric_name]))
-        metrics.add_label_tp('all', metric_name, tp)
-        tp_metrics[metric_name] = tp
-    
+    for node_type, match_data in node_match_data_list.items():
+        for metric_name in TP_METRICS:
+            if metric_name not in match_data:
+                tp = np.nan
+            elif metric_name not in match_data:
+                tp = np.nan
+            else:
+                tp = float(np.mean(match_data[metric_name]))
+                std_dev = float(np.std(match_data[metric_name]))
+                rmse = float(np.sqrt(np.mean(np.square(match_data[metric_name]))))
+                print(f"🔍 {node_type} {metric_name} MAE: {tp}, RMSE: {rmse}")
+            metrics.add_label_tp(node_type, metric_name, tp)
+
     # Get metrics summary
     metrics_summary = metrics.serialize()
-    
+
+    # Dump the metric data, meta and metrics to disk.
+    output_dir = Path(target_path).parents[0]
+    with open(os.path.join(output_dir, 'metrics_summary.json'), 'w') as f:
+        json.dump(metrics_summary, f, indent=2)
+    with open(os.path.join(output_dir, 'metrics_details.json'), 'w') as f:
+        json.dump(metric_data_list.serialize(), f, indent=2)
+
+    num_matched_boxes = 0
+    for match_data in match_data_list.values():
+        if 'trans_err' in match_data:
+            num_matched_boxes += len(match_data['trans_err'])
+
     return {
-        'ATE': tp_metrics['trans_err'],
-        'AOE': tp_metrics['orient_err'],
-        'ASE': tp_metrics['scale_err'],
+        'ATE': metrics_summary['tp_errors']['trans_err'],
+        'AOE': metrics_summary['tp_errors']['orient_err'],
+        'ASE': metrics_summary['tp_errors']['scale_err'],
         'mAP': metrics_summary['mean_ap'],
         'NDS': metrics_summary['nd_score'],
-        'AVE': tp_metrics['vel_err'],
-        'AAE': tp_metrics['attr_err'],
+        'AVE': metrics_summary['tp_errors']['vel_err'],
+        'AAE': metrics_summary['tp_errors']['attr_err'],
         'num_tar_boxes': len(tar_boxes.all),
         'num_gt_boxes': len(gt_boxes.all),
-        'num_matched_boxes': len(match_data_copy['trans_err'])
+        'num_matched_boxes': num_matched_boxes
     }
 
 def parse_metrics_json(metrics_path: str, target_iteration: int) -> Dict[str, Optional[float]]:
@@ -267,13 +498,19 @@ def main() -> None:
     parser.add_argument(
         "--ctrl",
         type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred.json',
+        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_class.json',
+        # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
+        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
+        # default='/workspace/drivestudio/output/box_experiments_0804_eval/prediction/results_tracking.json',
         help="Path to comparison prediction json file",
     )
     parser.add_argument(
         "--tar",
         type=str,
-        default='/workspace/drivestudio/output/box_experiments_0804',
+        # default='/workspace/drivestudio/output/box_experiments_0804_eval',
+        # default='/workspace/drivestudio/output/box_experiments_0813',
+        # default='/workspace/drivestudio/output/box_experiments_0821',
+        default='/workspace/drivestudio/output/box_experiments_0825',
         help="Directory to search for target files",
     )
     parser.add_argument(
@@ -303,7 +540,7 @@ def main() -> None:
     parser.add_argument(
         "--verbose",
         type=bool,
-        default=False,
+        default=True,
         help="Verbose",
     )
     parser.add_argument(
@@ -458,9 +695,12 @@ def main() -> None:
         
         # Perform evaluation
         if args.verbose:
-            print("📊 Performing evaluation...")
-        eval_results = perform_evaluation(final_gt_evalboxes, final_target_evalboxes, config, nusc)
-        
+            print(f"\n    Performing target evaluation...")
+        eval_results = perform_evaluation(final_gt_evalboxes, final_target_evalboxes, config, nusc, target_file)
+        if args.verbose:
+            print(f"\n    Performing control evaluation...")
+        ctrl_eval_results = perform_evaluation(final_gt_evalboxes, final_ctrl_evalboxes, config, nusc, args.ctrl)
+
         # Store results
         # Get parent directory name (1st level up from file)
         path_parts = Path(target_file).parts

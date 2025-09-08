@@ -17,6 +17,7 @@ from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from models.gaussians.basics import *
+from pytorch3d.ops import knn_points
 
 logger = logging.getLogger()
 
@@ -60,6 +61,7 @@ def lr_scheduler_fn(
     return func
 
 class BasicTrainer(nn.Module):
+    dataset: Optional["DrivingDataset"]
     def __init__(
         self,
         type: str = "basic",
@@ -122,8 +124,12 @@ class BasicTrainer(nn.Module):
         self.cur_frame = torch.tensor(0, device=self.device)
         self.test_set_indices = test_set_indices # will be override
         
+        # dataset reference for lidar access
+        self.dataset = None
+        
         # a simple viewer for background visualization
         self.viewer = None
+        self.vis_curr_frame = 0
     
     @property
     def in_test_set(self):
@@ -240,6 +246,8 @@ class BasicTrainer(nn.Module):
         
         depth_loss_fn = None
         depth_loss_cfg = self.losses_dict.get("depth", None)
+        expand_depth_loss_fn = None
+        expand_depth_loss_cfg = self.losses_dict.get("expand_depth", None)
         if depth_loss_cfg is not None:
             from models.losses import DepthLoss
             depth_loss_fn = DepthLoss(
@@ -247,7 +255,15 @@ class BasicTrainer(nn.Module):
                 normalize=depth_loss_cfg.normalize,
                 use_inverse_depth=depth_loss_cfg.inverse_depth,
             )
+        if expand_depth_loss_cfg is not None:
+            from models.losses import DepthLoss
+            expand_depth_loss_fn = DepthLoss(
+                loss_type=expand_depth_loss_cfg.loss_type,
+                normalize=expand_depth_loss_cfg.normalize,
+                use_inverse_depth=expand_depth_loss_cfg.inverse_depth,
+            )
         self.depth_loss_fn = depth_loss_fn
+        self.expand_depth_loss_fn = expand_depth_loss_fn
     
     def optimizer_zero_grad(self) -> None:
         self.optimizer.zero_grad()
@@ -271,16 +287,21 @@ class BasicTrainer(nn.Module):
 
         # viewer
         if self.viewer is not None:
-            while self.viewer.state.status == "paused":
+            while self.viewer.state == "paused":
                 time.sleep(0.01)
             self.viewer.lock.acquire()
             self.tic = time.time()
+
         
     def postprocess_per_train_step(self, step: int) -> None:
         radii = self.info["radii"]
         if self.render_cfg.absgrad:
+            if not hasattr(self.info["means2d"], "absgrad"):
+                return
             grads = self.info["means2d"].absgrad.clone()
         else:
+            if not hasattr(self.info["means2d"], "grad"):
+                return
             grads = self.info["means2d"].grad.clone()
         grads[..., 0] *= self.info["width"] / 2.0 * self.render_cfg.batch_size
         grads[..., 1] *= self.info["height"] / 2.0 * self.render_cfg.batch_size
@@ -288,24 +309,35 @@ class BasicTrainer(nn.Module):
         for class_name in self.gaussian_classes.keys():
             gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
             
-            self.models[class_name].postprocess_per_train_step(
-                step=step,
-                optimizer=self.optimizer,
-                radii=radii[0, gaussian_mask],
-                xys_grad=grads[0, gaussian_mask],
-                last_size=max(self.info["width"], self.info["height"])
-            )
+            if class_name == "Background":
+                self.models[class_name].postprocess_per_train_step(
+                    step=step,
+                    optimizer=self.optimizer,
+                    radii=radii[0, gaussian_mask],
+                    xys_grad=grads[0, gaussian_mask],
+                    last_size=max(self.info["width"], self.info["height"]),
+                    instance_trans=self.models["RigidNodes"].instances_trans[self.cur_frame],
+                    instance_quats=self.models["RigidNodes"].instances_quats[self.cur_frame],
+                    instance_size=self.models["RigidNodes"].instances_size,
+                )
+            else:
+                self.models[class_name].postprocess_per_train_step(
+                    step=step,
+                    optimizer=self.optimizer,
+                    radii=radii[0, gaussian_mask],
+                    xys_grad=grads[0, gaussian_mask],
+                    last_size=max(self.info["width"], self.info["height"])
+                )
         
         # viewer
         if self.viewer is not None:
             num_train_rays_per_step = self.render_cfg.batch_size * self.info["width"] * self.info["height"]
-            self.viewer.lock.release()
             num_train_steps_per_sec = 1.0 / (time.time() - self.tic)
-            num_train_rays_per_sec = (
-                num_train_rays_per_step * num_train_steps_per_sec
-            )
+            num_train_rays_per_sec = num_train_rays_per_step * num_train_steps_per_sec
+
             # Update the viewer state.
-            self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+            self.viewer.lock.release()
+            self.viewer.render_tab_state.num_train_rays_per_sec = num_train_rays_per_sec
             # Update the scene.
             self.viewer.update(step, num_train_rays_per_step)
     
@@ -328,10 +360,21 @@ class BasicTrainer(nn.Module):
         if "CamPose" in self.models.keys() and not novel_view:
             camtoworlds = self.models["CamPose"](camtoworlds, image_ids)
         
+        # Compute the expand camera poses        
+        expand_camtoworlds = expand_camtoworlds_gt = None
+        if "expand_camera_to_worlds" in camera_infos and camera_infos["expand_camera_to_worlds"] is not None:
+            expand_camtoworlds_gt = camera_infos["expand_camera_to_worlds"]
+            expand_camtoworlds = torch.zeros_like(expand_camtoworlds_gt)
+            for i in range(expand_camtoworlds_gt.shape[0]):
+                exp_cam_to_ori_cam = torch.matmul(camtoworlds_gt.inverse(), expand_camtoworlds_gt[i])
+                expand_camtoworlds[i] = torch.matmul(camtoworlds, exp_cam_to_ori_cam)
+
         # collect camera information
         camera_dict = dataclass_camera(
             camtoworlds=camtoworlds,
             camtoworlds_gt=camtoworlds_gt,
+            expand_camtoworlds=expand_camtoworlds,
+            expand_camtoworlds_gt=expand_camtoworlds_gt,
             Ks=camera_infos["intrinsics"],
             H=camera_infos["height"],
             W=camera_infos["width"]
@@ -364,7 +407,11 @@ class BasicTrainer(nn.Module):
         
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
-            
+            # if v is not None and len(v) > 0:
+            #     gs_dict[k] = torch.cat(v, dim=0)
+            # else:
+            #     gs_dict[k] = None
+                
         # get the class labels
         self.pts_labels = gs_dict.pop("class_labels")
         if self.render_dynamic_mask:
@@ -389,14 +436,14 @@ class BasicTrainer(nn.Module):
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
     
-        def render_fn(opaticy_mask=None, return_info=False):
+        def render_fn(opaticy_mask=None, return_info=False, ctow=cam.camtoworlds, render_mode="RGB+ED"):
             renders, alphas, info = rasterization(
                 means=gs.means,
                 quats=gs.quats,
                 scales=gs.scales,
                 opacities=gs.opacities.squeeze()*opaticy_mask if opaticy_mask is not None else gs.opacities.squeeze(),
                 colors=gs.rgbs,
-                viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
+                viewmats=torch.linalg.inv(ctow)[None, ...],  # [C, 4, 4]
                 Ks=cam.Ks[None, ...],  # [C, 3, 3]
                 width=cam.W,
                 height=cam.H,
@@ -404,26 +451,56 @@ class BasicTrainer(nn.Module):
                 absgrad=self.render_cfg.absgrad,
                 sparse_grad=self.render_cfg.sparse_grad,
                 rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
+                render_mode=render_mode,
                 **kwargs,
             )
             renders = renders[0]
             alphas = alphas[0].squeeze(-1)
             assert self.render_cfg.batch_size == 1, "batch size must be 1, will support batch size > 1 in the future"
-            
-            assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
-            rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+
+            if render_mode == "RGB+ED":
+                assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
+                rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+                rendered_rgb = torch.clamp(rendered_rgb, max=1.0)
+            elif render_mode == "D" or render_mode == "ED":
+                assert renders.shape[-1] == 1, f"Must render depth and alpha"
+                rendered_rgb = None
+                rendered_depth = renders
+            else:
+                raise ValueError(f"Invalid render mode: {render_mode}")
             
             if not return_info:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None]
+                return rendered_rgb, rendered_depth, alphas[..., None]
             else:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], info
+                return rendered_rgb, rendered_depth, alphas[..., None], info
         
+        # render expand depth
+        expand_rgbs = None
+        expand_depths = None
+        expand_opacities = None
+        if cam.expand_camtoworlds is not None:
+            expand_rgbs = []
+            expand_depths = []
+            expand_opacities = []
+            for extand_ctow in cam.expand_camtoworlds:
+                expand_rgb, expand_depth, expand_opacity = render_fn(return_info=False, ctow=extand_ctow, render_mode="RGB+ED")
+                expand_rgbs.append(expand_rgb)
+                expand_depths.append(expand_depth)
+                expand_opacities.append(expand_opacity)
+            expand_rgbs = torch.stack(expand_rgbs, dim=0)
+            expand_depths = torch.stack(expand_depths, dim=0)
+            expand_opacities = torch.stack(expand_opacities, dim=0)
+
         # render rgb and opacity
         rgb, depth, opacity, self.info = render_fn(return_info=True)
+
         results = {
             "rgb_gaussians": rgb,
             "depth": depth, 
-            "opacity": opacity
+            "opacity": opacity,
+            "expand_depths": expand_depths,
+            "expand_opacities": expand_opacities,
+            "expand_rgbs_gaussians": expand_rgbs
         }
         
         if self.training:
@@ -483,7 +560,6 @@ class BasicTrainer(nn.Module):
             cam=processed_cam,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
-            render_mode="RGB+ED",
             radius_clip=self.render_cfg.get('radius_clip', 0.)
         )
         
@@ -499,12 +575,20 @@ class BasicTrainer(nn.Module):
         
         return outputs
     
-    def backward(self, loss_dict: Dict[str, torch.Tensor]) -> None:
+    def backward(self, loss_dict: Dict[str, torch.Tensor], selective_loss_dict: Dict[str, torch.Tensor] = None) -> None:
         # ----------------- backward ----------------
         total_loss = sum(loss for loss in loss_dict.values())
-        self.grad_scaler.scale(total_loss).backward()
-        self.optimizer_step()
         
+        # total_loss가 빈 딕셔너리 합계인 0(int)이 아니라 유효한 Tensor일 경우에만 backward 수행
+        if isinstance(total_loss, torch.Tensor):
+            self.grad_scaler.scale(total_loss).backward()
+        
+        # selective loss에 대한 backward 처리 (특정 파라미터에만 적용)
+        if selective_loss_dict:
+            self.backward_selective_loss(selective_loss_dict)
+        
+        self.optimizer_step()
+
         scale = self.grad_scaler.get_scale()
         self.grad_scaler.update()
         
@@ -514,7 +598,198 @@ class BasicTrainer(nn.Module):
                 if group["name"] in self.lr_schedulers:
                     new_lr = self.lr_schedulers[group["name"]](self.step)
                     group["lr"] = new_lr
+    
+    def backward_selective_loss(self, selective_loss_dict: Dict[str, torch.Tensor]) -> None:
+        """
+        특정 파라미터 그룹(ins_rotation, ins_translation)에만 selective loss를 적용
+        """
+        if not selective_loss_dict:
+            return
+            
+        # ins_rotation과 ins_translation 파라미터만 수집
+        target_params = []
+        target_params_names = []
+        for group in self.optimizer.param_groups:
+            group_name = group["name"]
+            if "ins_rotation" in group_name or "ins_translation" in group_name:
+                target_params.extend(group["params"])
+                target_params_names.append(group_name)
+        if target_params:
+            # selective loss의 총합 계산
+            total_selective_loss = sum(loss for loss in selective_loss_dict.values())
+            
+            # 특정 파라미터에만 gradient 계산
+            gradients = torch.autograd.grad(
+                outputs=self.grad_scaler.scale(total_selective_loss),
+                inputs=target_params,
+                create_graph=False,
+                retain_graph=False,
+                allow_unused=True
+            )
+            
+            # 계산된 gradient를 해당 파라미터에 누적
+            for param, grad in zip(target_params, gradients):
+                if grad is not None:
+                    if param.grad is None:
+                        param.grad = grad
+                    else:
+                        param.grad += grad
+                    # print("target_params_names: ", target_params_names, "param.grad.max: ", param.grad.max(), "param.grad.min: ", param.grad.min())
+
+    def get_points_on_instances(self, dynamic_mask, intrinsics, cam_to_world, lidar_points_world) -> torch.Tensor:
+        H, W = dynamic_mask.shape
+        # 카메라 내재 파라미터 처리 (project_lidar_pts_on_images 스타일)
+        if intrinsics.shape[0] == 4:
+            intrinsic_4x4 = intrinsics
+        else:
+            intrinsic_4x4 = torch.nn.functional.pad(intrinsics, (0, 1, 0, 1))
+        intrinsic_4x4[3, 3] = 1.0
+        
+        # lidar2img transformation matrix
+        lidar2img = intrinsic_4x4 @ cam_to_world.inverse()
+        
+        # 라이다 포인트를 이미지 평면에 투영
+        proj_lidar_points = (
+            lidar2img[:3, :3] @ lidar_points_world.T + lidar2img[:3, 3:4]
+        ).T  # (num_pts, 3)
+        
+        depth = proj_lidar_points[:, 2]
+        cam_points = proj_lidar_points[:, :2] / (depth.unsqueeze(-1) + 1e-6)  # (num_pts, 2)
+        
+        # 유효한 포인트 마스크 (이미지 경계 내부 + 적절한 깊이)
+        valid_mask = (
+            (cam_points[:, 0] >= 0)
+            & (cam_points[:, 0] < W)
+            & (cam_points[:, 1] >= 0)
+            & (cam_points[:, 1] < H)
+            & (depth > 1.5)
+        )  # (num_pts, )
+        
+        if valid_mask.sum() > 0:
+            filtered_cam_points = cam_points[valid_mask]                        
+            dynamic_point_values = dynamic_mask[
+                filtered_cam_points[:, 1].long(), 
+                filtered_cam_points[:, 0].long()
+            ]
+            
+            # 동적 마스크 값을 boolean으로 변환 (0.5 threshold)
+            dynamic_bool_mask = dynamic_point_values > 0.5
+            
+            if dynamic_bool_mask.sum() > 0:
+                # 유효한 포인트들 중에서 동적 영역에 있는 포인트들만 선택
+                valid_indices = torch.where(valid_mask)[0]
+                dynamic_indices = valid_indices[dynamic_bool_mask]
+                dynamic_lidar_points = lidar_points_world[dynamic_indices]
+                return dynamic_lidar_points
+            else:
+                return None
+        return None
+
+    def compute_p2p_dist(self, cam_infos, dynamic_lidar_points, p2p_dist_cfg) -> torch.Tensor:
+        # 4. 현재 프레임의 인스턴스들의 가우시안들 가져오기 (collect_gaussians 스타일)
+        camera_dict = dataclass_camera(
+            camtoworlds=cam_infos["camera_to_world"],
+            camtoworlds_gt=cam_infos["camera_to_world"],
+            expand_camtoworlds=cam_infos["expand_camera_to_worlds"],
+            expand_camtoworlds_gt=cam_infos["expand_camera_to_worlds"],
+            Ks=cam_infos["intrinsics"],
+            H=cam_infos["height"],
+            W=cam_infos["width"]
+        )
+        
+        # 모든 동적 가우시안 데이터 수집
+        all_dynamic_means = []
+        all_dynamic_scales = []
+        all_dynamic_quats = []
+        
+        for class_name in self.gaussian_classes.keys():
+            # 동적 객체 클래스만 처리 (Background, Sky 등 제외)
+            if class_name in ['RigidNodes', 'DeformableNodes', 'SMPLNodes'] and class_name in self.models:
+                model = self.models[class_name]
+                gs = model.get_gaussians(camera_dict)
                 
+                if gs is not None:
+                    if "_means" in gs:
+                        all_dynamic_means.append(gs["_means"])
+                    if "_scales" in gs:
+                        all_dynamic_scales.append(gs["_scales"])
+                    if "_quats" in gs:
+                        all_dynamic_quats.append(gs["_quats"])
+        
+        if len(all_dynamic_means) > 0:
+            # 모든 동적 가우시안 데이터 결합
+            dynamic_means_tensor = torch.cat(all_dynamic_means, dim=0) # (total_points, 3)
+            dynamic_scales_tensor = torch.cat(all_dynamic_scales, dim=0)  # (total_points, 3)
+            dynamic_quats_tensor = torch.cat(all_dynamic_quats, dim=0)  # (total_points, 4)
+                
+            # 5. 필터링된 lidar points을 source, gaussian means를 target으로 KNN 적용
+            if dynamic_means_tensor.shape[0] > 0:
+                # KNN을 위한 거리 계산 (각 라이다 포인트에 대해 가장 가까운 가우시안 포인트 찾기)
+                # pytorch3d.ops.knn_points 사용 (배치 차원 필요)
+                dists, idx, nn = knn_points(
+                    dynamic_lidar_points.unsqueeze(0),  # (1, N, 3)
+                    dynamic_means_tensor.unsqueeze(0),  # (1, M, 3)
+                    K=1,
+                )
+                
+                # 각 라이다 포인트에 대해 가장 가까운 가우시안의 인덱스
+                closest_gaussian_idx = idx.squeeze(0).squeeze(-1)  # (N,)
+                
+                # Step 1: 먼저 유클리디안 거리로 distance_threshold 필터링
+                euclidean_distances = dists.squeeze(0).squeeze(-1)  # (N,)
+                distance_threshold = p2p_dist_cfg.get("distance_threshold", 1.5)
+                valid_distance_mask = (euclidean_distances < distance_threshold) & \
+                                        (euclidean_distances > 0)
+                
+                if valid_distance_mask.sum() > 0:
+                    # Step 2: threshold 이내의 포인트들에 대해서만 마할라노비스 거리 계산
+                    use_mahalanobis = p2p_dist_cfg.get("use_mahalanobis", True)
+                    
+                    # 필터링된 포인트들과 해당 가우시안들만 선택
+                    filtered_lidar_points = dynamic_lidar_points[valid_distance_mask]  # (M, 3)
+                    filtered_gaussian_idx = closest_gaussian_idx[valid_distance_mask]  # (M,)
+                    
+                    if use_mahalanobis:
+                        # 필터링된 포인트들에 대응하는 가우시안의 스케일과 쿼터니언 가져오기
+                        corresponding_scales = dynamic_scales_tensor[filtered_gaussian_idx]  # (M, 3)
+                        corresponding_quats = dynamic_quats_tensor[filtered_gaussian_idx]  # (M, 4)
+                        corresponding_means = dynamic_means_tensor[filtered_gaussian_idx]  # (M, 3)
+                        
+                        # 쿼터니언을 회전 행렬로 변환
+                        rotation_matrices = quat_to_rotmat(corresponding_quats)  # (M, 3, 3)
+                        
+                        # 스케일을 대각 행렬로 변환 (공분산 행렬의 고유값)
+                        scales_clamped = torch.clamp(corresponding_scales, min=1e-6)  # numerical stability
+
+                        # 라이다 포인트와 가우시안 중심 간의 차이벡터
+                        diff_vectors = filtered_lidar_points - corresponding_means  # (M, 3)
+                        
+                        # 마할라노비스 거리 제곱 계산: d² = (x-μ)^T * Σ^(-1) * (x-μ)
+                        # 효율적인 계산: d² = sum((R^T * (x-μ)) ** 2 / σ²)
+                        # 먼저 차이벡터를 주축 좌표계로 변환
+                        rotated_diff = torch.bmm(
+                            rotation_matrices.transpose(-2, -1),  # R^T
+                            diff_vectors.unsqueeze(-1)
+                        ).squeeze(-1)  # (M, 3)
+                        
+                        # 각 축에서의 정규화된 거리 제곱을 계산
+                        normalized_sq_dist = (rotated_diff ** 2) / (scales_clamped ** 2)  # (M, 3)
+                        mahalanobis_sq = normalized_sq_dist.sum(dim=-1)  # (M,)
+                        
+                        # 마할라노비스 거리를 loss로 사용
+                        mahalanobis_distances = torch.sqrt(torch.clamp(mahalanobis_sq, min=0))  # (M,)
+                        p2p_dist_loss = mahalanobis_distances.mean()
+
+                    else:
+                        # 마할라노비스 거리를 사용하지 않는 경우, 필터링된 유클리디안 거리 사용
+                        filtered_euclidean_distances = euclidean_distances[valid_distance_mask]
+                        p2p_dist_loss = filtered_euclidean_distances.mean()
+
+                    return p2p_dist_loss
+                else:
+                    # threshold 이내의 포인트가 없으면 loss 계산하지 않음
+                    return None
+
     def compute_losses(
         self,
         outputs: Dict[str, torch.Tensor],
@@ -523,34 +798,82 @@ class BasicTrainer(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         # calculate loss
         loss_dict = {}
+        # 별도로 처리할 loss들을 저장
+        selective_loss_dict = {}
         
         if "egocar_masks" in image_infos:
             # in the case of egocar, we need to mask out the egocar region
             valid_loss_mask = (1.0 - image_infos["egocar_masks"]).float()
         else:
-            valid_loss_mask = torch.ones_like(image_infos["sky_masks"])
+            valid_loss_mask = torch.ones_like(image_infos["pixels"][..., 0])
+            
+        dynamic_region = self.losses_dict.get("dynamic_region", None)
+        opacity_threshold = dynamic_region.get("opacity_threshold", None)
+        if dynamic_region is not None and "Dynamic_opacity" in outputs and opacity_threshold is not None:
+            dynamic_mask = (outputs["Dynamic_opacity"].data > opacity_threshold).squeeze()
+            dynamic_mask = image_infos["dynamic_masks"].bool() | dynamic_mask
+        else:
+            dynamic_mask = image_infos["dynamic_masks"].bool()            
+            
+        if self.dataset.data_cfg.pixel_source.only_dynamic:                
+            valid_loss_mask = valid_loss_mask * dynamic_mask.bool()
+            
+            if valid_loss_mask.sum() == 0:
+                return loss_dict, selective_loss_dict
             
         gt_rgb = image_infos["pixels"] * valid_loss_mask[..., None]
         predicted_rgb = outputs["rgb"] * valid_loss_mask[..., None]
+
+        # save gt and predicted rgb for debugging (optional)
+        try:
+            if self.step % 1000 == 0:
+                # resolve save directory
+                log_dir = "/workspace/drivestudio/output/tmp/" + time.strftime("%Y%m%d_%H")
+                images_dir = os.path.join(log_dir, "images")
+                os.makedirs(images_dir, exist_ok=True)
+
+                # tensors: [H, W, 3] in [0,1]
+                def _to_uint8_img(t: torch.Tensor) -> np.ndarray:
+                    t = torch.clamp(t, 0.0, 1.0).detach().cpu().numpy()
+                    t = (t * 255.0).round().astype(np.uint8)
+                    return t
+
+                gt_img = _to_uint8_img(image_infos["pixels"])
+                gt_mask_img = _to_uint8_img(gt_rgb)
+                pred_img = _to_uint8_img(outputs["rgb"])
+                pred_mask_img = _to_uint8_img(predicted_rgb)
+
+                # save as PNG
+                from PIL import Image
+                Image.fromarray(gt_img).save(os.path.join(images_dir, f"step_{self.step:05d}_gt.png"))
+                Image.fromarray(gt_mask_img).save(os.path.join(images_dir, f"step_{self.step:05d}_gt_mask.png"))
+                Image.fromarray(pred_img).save(os.path.join(images_dir, f"step_{self.step:05d}_pred.png"))
+                Image.fromarray(pred_mask_img).save(os.path.join(images_dir, f"step_{self.step:05d}_pred_mask.png"))
+        except Exception as _:
+            pass
         
-        gt_occupied_mask = (1.0 - image_infos["sky_masks"]).float() * valid_loss_mask
-        pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
         
-        # rgb loss
-        Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
-        simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
-        loss_dict.update({
-            "rgb_loss": self.losses_dict.rgb.w * Ll1,
-            "ssim_loss": self.losses_dict.ssim.w * simloss,
-        })
-        
+        rgb = self.losses_dict.get("rgb", None)        
+        if rgb is not None:
+            Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
+            simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
+            if not torch.isnan(Ll1).any() and not torch.isnan(simloss).any():
+                loss_dict.update({
+                    "rgb_loss": self.losses_dict.rgb.w * Ll1,
+                    "ssim_loss": self.losses_dict.ssim.w * simloss,
+                })
+
         # mask loss
         if self.sky_opacity_loss_fn is not None:
+            gt_occupied_mask = (1.0 - image_infos["sky_masks"]).float() * valid_loss_mask
+            pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
             sky_loss_opacity = self.sky_opacity_loss_fn(pred_occupied_mask, gt_occupied_mask) * self.losses_dict.mask.w
-            loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
+            if not torch.isnan(sky_loss_opacity).any():
+                loss_dict.update({"sky_loss_opacity": sky_loss_opacity})
         
         # depth loss
-        if self.depth_loss_fn is not None:
+        depth = self.losses_dict.get("depth", None)
+        if depth is not None:
             gt_depth = image_infos["lidar_depth_map"] 
             lidar_hit_mask = (gt_depth > 0).float() * valid_loss_mask
             pred_depth = outputs["depth"]
@@ -562,15 +885,65 @@ class BasicTrainer(nn.Module):
             else:
                 decay_weight = 1
             depth_loss = depth_loss * self.losses_dict.depth.w * decay_weight
-            loss_dict.update({"depth_loss": depth_loss})
+            if not torch.isnan(depth_loss).any():
+                loss_dict.update({"depth_loss": depth_loss})
+
+        # expand depth loss
+        expand_depth = self.losses_dict.get("expand_depth", None)
+        if expand_depth is not None and "expand_depths" in outputs and outputs["expand_depths"] is not None:
+            expand_depth_loss_sum = 0
+            for i in range(outputs["expand_depths"].shape[0]):
+                gt_expand_depth = image_infos["expand_lidar_depth_maps"][i]
+                lidar_hit_mask = (gt_expand_depth > 0).float() # no need to mask out the egocar region. it aready masked out in projection
+                pred_expand_depth = outputs["expand_depths"][i]
+                expand_depth_loss = self.expand_depth_loss_fn(pred_expand_depth, gt_expand_depth, lidar_hit_mask)
+                expand_depth_loss_sum += expand_depth_loss * expand_depth.w
+                # print("check expand_depth_loss_sum grad. rquired: ", expand_depth_loss_sum.requires_grad, ", fn: ", expand_depth_loss_sum.grad_fn)
+            if not torch.isnan(expand_depth_loss_sum).any():
+                loss_dict.update({"expand_depth_loss": expand_depth_loss_sum})
+
+        # ----- p-to-p dist loss -----
+        p2p_dist_cfg = self.losses_dict.get("p2p_dist", None)
+        if p2p_dist_cfg is not None and self.step < p2p_dist_cfg.stop_after:
+            # get_lidar_rays 함수를 사용한 정확한 라이다 포인트 계산
+            # cur_frame을 CPU로 변환해서 전달 (lidar_source 데이터가 CPU에 있음)
+            lidar_infos = self.dataset.lidar_source.get_lidar_rays(self.cur_frame.cpu().item())
+            lidar_points_world = (
+                lidar_infos["lidar_origins"]
+                + lidar_infos["lidar_viewdirs"] * lidar_infos["lidar_ranges"]
+            )  # 이미 월드 좌표계의 3D 포인트
             
+            # GPU로 이동 (다른 텐서들과 연산하기 위해)
+            lidar_points_world = lidar_points_world.to(self.device)
+            
+            # 2. 라이다 포인트를 현재 카메라 이미지에 투영해서 동적 객체 필터링
+            dynamic_lidar_points = None
+            if dynamic_mask is not None and lidar_points_world.shape[0] > 0:
+                dynamic_lidar_points = self.get_points_on_instances(
+                                                dynamic_mask=dynamic_mask, 
+                                                intrinsics=cam_infos["intrinsics"], 
+                                                cam_to_world=cam_infos["camera_to_world"], 
+                                                lidar_points_world=lidar_points_world)
+
+            # 공통 부분: 가우시안과 라이다 포인트 간의 거리 계산
+            if dynamic_lidar_points is not None and dynamic_lidar_points.shape[0] > 0:
+                p2p_dist_loss = self.compute_p2p_dist(cam_infos, dynamic_lidar_points, p2p_dist_cfg)
+                if p2p_dist_loss is not None and not torch.isnan(p2p_dist_loss).any():
+                    # print("p2p_dist_loss: ", p2p_dist_loss)
+                    selective_loss_dict.update({
+                        "p2p_dist_loss": p2p_dist_cfg.w * p2p_dist_loss
+                    })
+            
+
         # ----- reg loss -----
         opacity_entropy_reg = self.losses_dict.get("opacity_entropy", None)
         if opacity_entropy_reg is not None:
             pred_opacity = torch.clamp(outputs["opacity"].squeeze(), 1e-6, 1 - 1e-6)
-            loss_dict.update({
-                "opacity_entropy_loss": opacity_entropy_reg.w * (-pred_opacity * torch.log(pred_opacity)).mean()
-            })
+            opacity_entropy_reg_loss = (-pred_opacity * torch.log(pred_opacity)).mean()
+            if not torch.isnan(opacity_entropy_reg_loss).any():
+                loss_dict.update({
+                    "opacity_entropy_loss": opacity_entropy_reg.w * opacity_entropy_reg_loss
+                })
             
         # from pvg: https://github.com/fudan-zvg/PVG/blob/b4162a9135282e0f3c929054f16be1b3fbacd77a/train.py#L161
         inverse_depth_smoothness_reg = self.losses_dict.get("inverse_depth_smoothness", None)
@@ -580,9 +953,10 @@ class BasicTrainer(nn.Module):
                 inverse_depth[None].repeat(1, 1, 1, 3).permute(0, 3, 1, 2),
                 image_infos["pixels"][None].permute(0, 3, 1, 2)
             )
-            loss_dict.update({
-                "inverse_depth_smoothness_loss": inverse_depth_smoothness_reg.w * loss_inv_depth
-            })
+            if not torch.isnan(loss_inv_depth).any():
+                loss_dict.update({
+                    "inverse_depth_smoothness_loss": inverse_depth_smoothness_reg.w * loss_inv_depth
+                })
             
         # affine reg loss
         affine_reg = self.losses_dict.get("affine", None)
@@ -591,33 +965,36 @@ class BasicTrainer(nn.Module):
             reg_mat = torch.eye(3, device=self.device)
             reg_shift = torch.zeros(3, device=self.device)
             loss_affine = torch.abs(affine_trs[..., :3, :3] - reg_mat).mean() + torch.abs(affine_trs[..., :3, 3:] - reg_shift).mean()
-            loss_dict.update({
-                "affine_loss": affine_reg.w * loss_affine
-            })
+            if not torch.isnan(loss_affine).any():
+                loss_dict.update({
+                    "affine_loss": affine_reg.w * loss_affine
+                })
 
         # dynamic region loss
-        dynamic_region_weighted_losses = self.losses_dict.get("dynamic_region", None)
-        if dynamic_region_weighted_losses is not None:
-            weight_factor = dynamic_region_weighted_losses.get("w", 1.0)
-            start_from = dynamic_region_weighted_losses.get("start_from", 0)
-            if self.step == start_from:
+        dynamic_region = self.losses_dict.get("dynamic_region", None)
+        if dynamic_region is not None:
+            if self.step == dynamic_region.start_from:
                 self.render_dynamic_mask = True
-            if self.step > start_from and "Dynamic_opacity" in outputs:
-                dynamic_pred_mask = (outputs["Dynamic_opacity"].data > 0.2).squeeze()
-                dynamic_pred_mask = dynamic_pred_mask & valid_loss_mask.bool()
-                
-                if dynamic_pred_mask.sum() > 0:
-                    Ll1 = torch.abs(gt_rgb[dynamic_pred_mask] - predicted_rgb[dynamic_pred_mask]).mean()
-                    loss_dict.update({
-                        "vehicle_region_rgb_loss": weight_factor * Ll1,
-                    })
+            if self.step > dynamic_region.start_from and "Dynamic_opacity" in outputs:               
+                if dynamic_mask.sum() > 0:
+                    dynamic_gt_rgb = gt_rgb * dynamic_mask[..., None]
+                    dynamic_pred_rgb = predicted_rgb * dynamic_mask[..., None]
+
+                    Ll1 = torch.abs(dynamic_gt_rgb - dynamic_pred_rgb).mean()
+                    Lssim = 1 - self.ssim(dynamic_gt_rgb.permute(2, 0, 1)[None, ...], dynamic_pred_rgb.permute(2, 0, 1)[None, ...])
+                    if not torch.isnan(Ll1).any():
+                        loss_dict.update({
+                            "dynamic_region_rgb_loss": dynamic_region.rgb_w * Ll1,
+                            "dynamic_region_ssim_loss": dynamic_region.ssim_w * Lssim,
+                        })
             
         # compute gaussian reg loss
         for class_name in self.gaussian_classes.keys():
             class_reg_loss = self.models[class_name].compute_reg_loss()
             for k, v in class_reg_loss.items():
-                loss_dict[f"{class_name}_{k}"] = v
-        return loss_dict
+                if not torch.isnan(v).any():
+                    loss_dict[f"{class_name}_{k}"] = v
+        return loss_dict, selective_loss_dict
     
     def compute_metrics(
         self,
@@ -724,23 +1101,25 @@ class BasicTrainer(nn.Module):
 
     @torch.no_grad()
     def _viewer_render_fn(
-        self, camera_state: nerfview.CameraState, img_wh: Tuple[int, int]
+        self, camera_state: nerfview.CameraState, tab_state: nerfview.RenderTabState
     ):
         """Callable function for the viewer."""
-        W, H = img_wh
+        W, H = tab_state.viewer_width, tab_state.viewer_height
         c2w = camera_state.c2w
-        K = camera_state.get_K(img_wh)
+        K = camera_state.get_K((W, H))
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
         
         cam = dataclass_camera(
             camtoworlds=c2w,
             camtoworlds_gt=c2w,
+            expand_camtoworlds=None,
+            expand_camtoworlds_gt=None,
             Ks=K,
             H=H,
             W=W
         )
-        
+
         gs_dict = {
             "_means": [],
             "_scales": [],
@@ -748,16 +1127,35 @@ class BasicTrainer(nn.Module):
             "_rgbs": [],
             "_opacities": [],
         }
-        for class_name in ["Background"]:
-            gs = self.models[class_name].get_gaussians(cam)
-            if gs is None:
-                continue
 
-            for k, _ in gs.items():
-                gs_dict[k].append(gs[k])
-        
+        self.vis_curr_frame = (self.vis_curr_frame + 1) % self.num_timesteps
+
+        for class_name in self.gaussian_classes.keys():
+            if class_name in self.models and self.models[class_name] is not None:
+                if class_name != "Background":
+                    self.models[class_name].set_cur_frame(self.vis_curr_frame)
+
+                gs = self.models[class_name].get_gaussians(cam)
+                if gs is None:
+                    continue
+
+                for k, _ in gs.items():
+                    gs_dict[k].append(gs[k])
+        # for class_name in ["Background"]:
+        #     if class_name in self.gaussian_classes:
+        #         gs = self.models[class_name].get_gaussians(cam)
+        #         if gs is None:
+        #             continue
+
+        #         for k, _ in gs.items():
+        #             gs_dict[k].append(gs[k])
+
         for k, v in gs_dict.items():
             gs_dict[k] = torch.cat(v, dim=0)
+            # if v is not None and len(v) > 0:
+            #     gs_dict[k] = torch.cat(v, dim=0)
+            # else:
+            #     gs_dict[k] = None
 
         gs = dataclass_gs(
             _means=gs_dict["_means"],

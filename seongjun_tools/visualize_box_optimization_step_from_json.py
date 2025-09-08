@@ -21,6 +21,7 @@ from nuscenes.eval.common.loaders import load_prediction
 from nuscenes.eval.detection.config import config_factory
 from nuscenes.utils.data_classes import LidarPointCloud
 from scipy.spatial.transform import Rotation as R
+from tqdm import tqdm
 
 # ===========================
 # Open3D 시각화 유틸리티
@@ -787,8 +788,10 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
             if all_frame_boxes and nusc is not None and scene_sample_tokens:
                 all_frame_boxes = add_ego_pose_to_boxes(nusc, all_frame_boxes, scene_sample_tokens)
 
-            for idx, current_sample_token in enumerate(scene_sample_tokens):
-                print(f"{bp_idx+1} / {len(box_poses_files)} 번째 box pose 파일, {idx+1} / {len(scene_sample_tokens)} 번째 샘플 인덱스 처리중...")
+            for idx, current_sample_token in tqdm(enumerate(scene_sample_tokens), 
+                                                  total=len(scene_sample_tokens),
+                                                  desc=f"Box pose {bp_idx+1}/{len(box_poses_files)} 처리중",
+                                                  leave=False):
                 ctx = sample_contexts[current_sample_token]
                 sample_idx = ctx['idx']
                 sample_output_dir = ctx['output_dir']
@@ -796,7 +799,7 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
 
                 frame_path = os.path.join(sample_output_dir, f"frame_{bp_idx:02d}_iter_{iteration:06d}.png")
                 if os.path.exists(frame_path):
-                    print(f"skip frame: {Path(frame_path).name}")
+                    # print(f"skip frame: {Path(frame_path).name}")
                     ctx['frame_images'].append(frame_path)
                     continue
 
@@ -966,6 +969,10 @@ def create_gif_animation_from_files(frame_files: List[str], output_dir: str, bas
         # GIF 경로 생성
         gif_path = os.path.join(output_dir, base_name)
         
+        if os.path.exists(gif_path):
+            print(f"⚠️ 파일 생성 스킵: {gif_path}")
+            return
+        
         # GIF 생성
         images[0].save(
             gif_path,
@@ -1046,7 +1053,7 @@ def main() -> None:
     parser.add_argument(
         "--box_poses_dir",
         type=str,
-        default="/workspace/drivestudio/output/test_250703/test_try1/box_poses",
+        default="/workspace/drivestudio/output/box_experiments_0821/box_bound_try4_p2p5_rots30/box_poses",
         help="Directory containing box pose JSON files (box_poses_*.json)"
     )
     parser.add_argument(
@@ -1054,8 +1061,8 @@ def main() -> None:
         type=str,
         default='scene-0103',
         help="Scene name to animate boxes optimization (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
-                                                "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
-                                                "'scene-1094', 'scene-1100')",
+                                                            "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
+                                                            "'scene-1094', 'scene-1100')",
     )
     parser.add_argument(
         "--sample_token",
@@ -1074,7 +1081,9 @@ def main() -> None:
     parser.add_argument(
         "--pred_boxes",
         type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_real_selected_tar1.json',
+        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_real_selected_tar1.json',
+        # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
+        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
         help="Path to prediction boxes json file",
     )
     parser.add_argument(

@@ -110,6 +110,25 @@ def main(args):
     cfg = setup(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if args.enable_wandb and cfg.logging.wandb_box_err_freq > 0:
+        from nuscenes import NuScenes
+        from nuscenes.eval.detection.config import config_factory
+        from seongjun_tools.utils.splits import create_splits_scenes
+        from seongjun_tools.utils.loaders import load_gt
+        from seongjun_tools.utils.detection.data_classes import DetectionBox
+        from seongjun_tools.evaluate_3dbb_instancewise import _get_scene_sample_tokens_chronologically
+        from seongjun_tools.evaluate_3dbb import filter_boxes_by_scene
+
+        # load nuscenes gt data
+        nusc = NuScenes(
+            version="v1.0-mini", dataroot="/workspace/drivestudio/data/nuscenes/raw", verbose=False)
+        splits = create_splits_scenes()
+        scene_name = splits['mini_trainval'][cfg.data.scene_idx]
+        scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
+        config = config_factory('detection_cvpr_2019')
+        gt_boxes, _ = load_gt(nusc, 'mini_trainval', DetectionBox, verbose=False)
+        gt_boxes = filter_boxes_by_scene(nusc, gt_boxes, scene_name)
+
     # build dataset
     dataset = DrivingDataset(data_cfg=cfg.data)
 
@@ -149,12 +168,12 @@ def main(args):
     render_keys = [
         "gt_rgbs",
         "rgbs",
-        "Background_rgbs",
-        "Dynamic_rgbs",
-        "RigidNodes_rgbs",
-        "DeformableNodes_rgbs",
-        "SMPLNodes_rgbs",
-        # "depths",
+        # "Background_rgbs",
+        # "Dynamic_rgbs",
+        # "RigidNodes_rgbs",
+        # "DeformableNodes_rgbs",
+        # "SMPLNodes_rgbs",
+        "depths",
         # "Background_depths",
         # "Dynamic_depths",
         # "RigidNodes_depths",
@@ -164,6 +183,10 @@ def main(args):
     ]
     if cfg.render.vis_lidar:
         render_keys.insert(0, "lidar_on_images")
+    if cfg.render.vis_exp_lidar:
+        render_keys.insert(0, "lidar_expand_on_depts")
+        render_keys.insert(0, "lidar_expand_on_images")
+        render_keys.insert(0, "expand_depths")
     if cfg.render.vis_sky:
         render_keys += ["rgb_sky_blend", "rgb_sky"]
     if cfg.render.vis_error:
@@ -260,7 +283,7 @@ def main(args):
         outputs = trainer(image_infos, cam_infos)
         trainer.update_visibility_filter()
 
-        loss_dict = trainer.compute_losses(
+        loss_dict, selective_loss_dict = trainer.compute_losses(
             outputs=outputs,
             image_infos=image_infos,
             cam_infos=cam_infos,
@@ -271,7 +294,13 @@ def main(args):
                 raise ValueError(f"NaN detected in loss {k} at step {step}")
             if torch.isinf(v).any():
                 raise ValueError(f"Inf detected in loss {k} at step {step}")
-        trainer.backward(loss_dict)
+        # selective loss도 NaN/Inf 체크
+        for k, v in selective_loss_dict.items():
+            if torch.isnan(v).any():
+                raise ValueError(f"NaN detected in selective loss {k} at step {step}")
+            if torch.isinf(v).any():
+                raise ValueError(f"Inf detected in selective loss {k} at step {step}")
+        trainer.backward(loss_dict, selective_loss_dict)
         
         # after training step
         trainer.postprocess_per_train_step(step=step)
@@ -287,7 +316,76 @@ def main(args):
         metric_logger.update(**{"train_metrics/"+k: v.item() for k, v in metric_dict.items()})
         metric_logger.update(**{"train_stats/gaussian_num_" + k: v for k, v in trainer.get_gaussian_count().items()})
         metric_logger.update(**{"losses/"+k: v.item() for k, v in loss_dict.items()})
+        metric_logger.update(**{"selective_losses/"+k: v.item() for k, v in selective_loss_dict.items()})
         metric_logger.update(**{"train_stats/lr_" + group['name']: group['lr'] for group in trainer.optimizer.param_groups})
+        
+        # if step % cfg.logging.save_kf_box_pose_freq == 0 and step > 0:
+        if cfg.logging.wandb_box_err_freq > 0 and step % cfg.logging.wandb_box_err_freq == 0 and step > 0:
+            from seongjun_tools.evaluate_3dbb_instancewise import perform_evaluation
+            camera_front_start = dataset.pixel_source.camera_front_start
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["RigidNodes", "DeformableNodes", "SMPLNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/"+k: v for k, v in eval_results.items()})
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["RigidNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/rigid/"+k: v for k, v in eval_results.items()})
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["DeformableNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/deformable/"+k: v for k, v in eval_results.items()})
+
+            tar_boxes = generate_boxs(
+                trainer=trainer,
+                sample_tokens=scene_sample_tokens,
+                camera_front_start=camera_front_start,
+                target_node_types=["SMPLNodes"],
+            )
+            eval_results = perform_evaluation(
+                gt_boxes=gt_boxes,
+                tar_boxes=tar_boxes,
+                sample_tokens=scene_sample_tokens,
+                config=config,
+                nusc=nusc,
+            )
+            metric_logger.update(**{"box_eval/smpl/"+k: v for k, v in eval_results.items()})
+
+
+
         if args.enable_wandb:
             wandb.log({k: v.avg for k, v in metric_logger.meters.items()})
 
@@ -405,7 +503,6 @@ def _transform_pose_to_world(
 
 def _extract_pose_annotations(
     trainer,
-    dataset,
     keyframe_interval: int = 5,
     camera_front_start: Optional[np.ndarray] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -426,17 +523,26 @@ def _extract_pose_annotations(
         else:
             quats = model.instances_quats.detach().cpu().numpy()
         sizes = model.instances_size.detach().cpu().numpy()
-
+        valid_mask = model.instances_fv.detach().cpu().numpy()
+        detection_names = model.instances_detection_name
+        instance_tokens = model.instances_instance_token
+        true_ids = model.instances_true_id
+        
         num_frames, num_instances = trans.shape[:2]
         keyframes = range(0, num_frames, keyframe_interval)
 
-        for inst_id in range(num_instances):
-            inst_size = sizes[inst_id].tolist()
+        for inst_idx in range(num_instances):
+            inst_size = sizes[inst_idx].tolist()
             inst_size = [inst_size[1], inst_size[0], inst_size[2]]
+            pts_mask = model.point_ids[..., 0] == inst_idx
+            num_gaussians = pts_mask.sum().detach().cpu().numpy().tolist()
 
             for fi in keyframes:
-                t = trans[fi, inst_id]
-                q = quats[fi, inst_id]
+                if valid_mask[fi, inst_idx] == 0:
+                    continue
+
+                t = trans[fi, inst_idx]
+                q = quats[fi, inst_idx]
                 if np.allclose(t, 0, atol=1e-6):
                     continue
 
@@ -449,15 +555,90 @@ def _extract_pose_annotations(
                     "translation": t_world.tolist(),
                     "rotation": q_world.tolist(),
                     "size": inst_size,
-                    "detection_name": dataset.pixel_source.instances_detection_name[inst_id],
-                    "instance_id": int(inst_id),
+                    "detection_name": detection_names[inst_idx],
+                    "instance_token": instance_tokens[inst_idx],
+                    "instance_idx": true_ids[inst_idx],
                     "node_type": node_type,
                     "confidence": 1.0,
+                    "num_gaussians": num_gaussians
                 }
 
                 results.setdefault(str(fi), []).append(ann)
 
     return results
+
+
+from nuscenes.eval.common.data_classes import EvalBoxes
+from seongjun_tools.utils.detection.data_classes import DetectionBox
+def generate_boxs(
+    trainer,
+    keyframe_interval: int = 5,
+    camera_front_start: Optional[np.ndarray] = None,
+    sample_tokens: List[str] = [],
+    target_node_types: List[str] = ["RigidNodes", "SMPLNodes", "DeformableNodes"],
+) -> EvalBoxes:
+    """Return a dict keyed by frame_idx (as str) → list of annotation dicts."""
+
+    eval_boxes = EvalBoxes()
+
+    node_mappings = target_node_types
+
+    for node_type in node_mappings:
+        if node_type not in trainer.models:
+            continue
+
+        model = trainer.models[node_type]
+        trans = model.instances_trans.detach().cpu().numpy()
+        if node_type == "SMPLNodes":
+            quats = model.instances_quats.detach().cpu().numpy()[:, :, 0, :]
+        else:
+            quats = model.instances_quats.detach().cpu().numpy()
+        sizes = model.instances_size.detach().cpu().numpy()
+        valid_mask = model.instances_fv.detach().cpu().numpy()
+        detection_names = model.instances_detection_name
+        instance_tokens = model.instances_instance_token
+        true_ids = model.instances_true_id
+        
+        num_frames, num_instances = trans.shape[:2]
+        keyframes = range(0, num_frames, keyframe_interval)
+
+        for inst_idx in range(num_instances):
+            inst_size = sizes[inst_idx].tolist()
+            inst_size = [inst_size[1], inst_size[0], inst_size[2]]
+            pts_mask = model.point_ids[..., 0] == inst_idx
+            num_gaussians = pts_mask.sum().detach().cpu().numpy().tolist()
+
+            for idx, fi in enumerate(keyframes):
+                if valid_mask[fi, inst_idx] == 0:
+                    continue
+
+                t = trans[fi, inst_idx]
+                q = quats[fi, inst_idx]
+                if np.allclose(t, 0, atol=1e-6):
+                    continue
+
+                if camera_front_start is not None:
+                    t_world, q_world = _transform_pose_to_world(t, q, camera_front_start)
+                else:
+                    t_world, q_world = t, q
+
+                sample_token = sample_tokens[idx]
+                if detection_names[inst_idx] == 'human.pedestrian.personal_mobility':
+                    continue
+                detection_box = DetectionBox(
+                        sample_token=sample_token,
+                        translation=t_world.tolist(),
+                        size=tuple(inst_size),
+                        rotation=q_world.tolist(),
+                        detection_name=detection_names[inst_idx],
+                        detection_score=-1.0,  # GT samples do not have a score.
+                        instance_token=instance_tokens[inst_idx],
+                        instance_idx=true_ids[inst_idx],
+                        num_gaussians = num_gaussians
+                    )
+                eval_boxes.add_boxes(sample_token, [detection_box])
+
+    return eval_boxes
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -478,7 +659,6 @@ def save_pose_annotations(
 
     results = _extract_pose_annotations(
         trainer,
-        dataset,
         keyframe_interval=keyframe_interval,
         camera_front_start=camera_front_start,
     )
@@ -508,7 +688,7 @@ if __name__ == "__main__":
     
     # wandb logging part
     parser.add_argument("--enable_wandb", action="store_true", help="enable wandb logging")
-    parser.add_argument("--entity", default="ziyc", type=str, help="wandb entity name")
+    parser.add_argument("--entity", default="starsixmoon-team", type=str, help="wandb entity name")
     parser.add_argument("--project", default="drivestudio", type=str, help="wandb project name, also used to enhance log_dir")
     parser.add_argument("--run_name", default="omnire", type=str, help="wandb run name, also used to enhance log_dir")
     

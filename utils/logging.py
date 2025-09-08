@@ -248,7 +248,7 @@ def _configure_logger(
     # stdout logging for main worker only
     if is_main_process():
         handler = logging.StreamHandler(stream=sys.stdout)
-        handler.setLevel(logging.DEBUG)
+        handler.setLevel(logging.ERROR)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 

@@ -4,7 +4,8 @@ docker build -t drivestudio:0.0.1 .
 # 2. Environment Setup
 ## Run Docker Container
 xhost +local:root
-docker run --gpus all -it --shm-size=16g \
+docker run --gpus '"device=0"' -it --shm-size=16g \
+    -p 8080:8080 \
     -v "/home/aimlab/seongjun_ws/docker_ws/dynamic_3dgs_ws/drivestudio:/workspace/drivestudio" \
     -v "/media/aimlab/HDD02_1TB:/workspace/drivestudio/data" \
     -v "/usr/share/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d/" \
@@ -22,9 +23,15 @@ conda activate drivestudio
 apt-get update && apt-get install -y fonts-dejavu-core libegl1 libgl1 libgles2 libglvnd0
 python3 -m pip install open3d==0.19.0
 
+## Install packages for web viewer
+python -m pip install --no-cache-dir \
+  "git+https://github.com/nerfstudio-project/nerfview@main" \
+  "git+https://github.com/nerfstudio-project/viser@main"
+python -m pip install splines
+
 # 3. Run OmniRe training
 ## Set Configuration
-PROJECT_NAME="feasibility_check_0618"
+PROJECT_NAME="feasibility_check_0619"
 RUN_NAME="run_updated_scene_0_date_0618_try_1"
 DATASET_NAME="nuscenes/6cams_update"
 ## Optimization

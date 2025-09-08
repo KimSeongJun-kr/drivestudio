@@ -113,6 +113,8 @@ def projection_matrix(znear, zfar, fovx, fovy, device:Union[str,torch.device]="c
 class dataclass_camera:
     camtoworlds: torch.Tensor
     camtoworlds_gt: torch.Tensor
+    expand_camtoworlds: torch.Tensor
+    expand_camtoworlds_gt: torch.Tensor
     Ks: torch.Tensor
     H: int
     W: int

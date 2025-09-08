@@ -87,6 +87,8 @@ class MultiTrainer(BasicTrainer):
         self,
         dataset: DrivingDataset,
     ) -> None:
+        # dataset 참조 저장 (p2p_dist loss에서 lidar_source 접근용)
+        self.dataset = dataset
         # get instance points
         rigidnode_pts_dict, deformnode_pts_dict, smplnode_pts_dict = {}, {}, {}
         if "RigidNodes" in self.model_config:
@@ -243,20 +245,40 @@ class MultiTrainer(BasicTrainer):
             cam=processed_cam,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
-            render_mode="RGB+ED",
             radius_clip=self.render_cfg.get('radius_clip', 0.)
         )
         
         # render sky
-        sky_model = self.models['Sky']
-        outputs["rgb_sky"] = sky_model(image_infos)
-        outputs["rgb_sky_blend"] = outputs["rgb_sky"] * (1.0 - outputs["opacity"])
+        if "Sky" in self.models:
+            sky_model = self.models['Sky']
+            outputs["rgb_sky"] = sky_model(image_infos)
+            outputs["rgb_sky_blend"] = outputs["rgb_sky"] * (1.0 - outputs["opacity"])
         
-        # affine transformation
-        outputs["rgb"] = self.affine_transformation(
-            outputs["rgb_gaussians"] + outputs["rgb_sky"] * (1.0 - outputs["opacity"]), image_infos
-        )
-        
+            # affine transformation
+            outputs["rgb"] = self.affine_transformation(
+                outputs["rgb_gaussians"] + outputs["rgb_sky"] * (1.0 - outputs["opacity"]), image_infos
+            )
+        else:
+            # affine transformation
+            outputs["rgb"] = self.affine_transformation(
+                outputs["rgb_gaussians"], image_infos
+            )
+
+        outputs["expand_rgbs"] = None
+        if "expand_rgbs_gaussians" in outputs and outputs["expand_rgbs_gaussians"] is not None:
+            expand_rgbs = []
+            for i in range(outputs["expand_rgbs_gaussians"].shape[0]):
+                if "Sky" in self.models:
+                    expand_rgb =self.affine_transformation(
+                        outputs["expand_rgbs_gaussians"][i] + outputs["rgb_sky"] * (1.0 - outputs["expand_opacities"][i]), image_infos
+                    )
+                else:
+                    expand_rgb =self.affine_transformation(
+                        outputs["expand_rgbs_gaussians"][i], image_infos
+                    )
+                expand_rgbs.append(expand_rgb)
+            outputs["expand_rgbs"] = torch.stack(expand_rgbs, dim=0)
+
         if not self.training and self.render_each_class:
             with torch.no_grad():
                 for class_name in self.gaussian_classes.keys():
@@ -268,7 +290,11 @@ class MultiTrainer(BasicTrainer):
 
         if not self.training or self.render_dynamic_mask:
             with torch.no_grad():
-                gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
+                if "Background" in self.gaussian_classes:
+                    gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
+                else:
+                    gaussian_mask = self.pts_labels != -1
+
                 sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
                 outputs["Dynamic_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                 outputs["Dynamic_opacity"] = sep_opacity
@@ -281,10 +307,10 @@ class MultiTrainer(BasicTrainer):
         outputs: Dict[str, torch.Tensor],
         image_infos: Dict[str, torch.Tensor],
         cam_infos: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        loss_dict = super().compute_losses(outputs, image_infos, cam_infos)
+    ) -> tuple:
+        loss_dict, selective_loss_dict = super().compute_losses(outputs, image_infos, cam_infos)
         
-        return loss_dict
+        return loss_dict, selective_loss_dict
     
     def compute_metrics(
         self,

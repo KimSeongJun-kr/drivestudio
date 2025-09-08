@@ -22,6 +22,7 @@ import torch.nn as nn
 from torch.nn import Parameter
 
 from models.gaussians.basics import *
+from utils.geometry import transform_points
 
 logger = logging.getLogger()
 
@@ -71,6 +72,11 @@ class VanillaGaussians(nn.Module):
         self._opacities = torch.zeros(1, 1, device=self.device)
         self._features_dc = torch.zeros(1, 3, device=self.device)
         self._features_rest = torch.zeros(1, num_sh_bases(self.sh_degree) - 1, 3, device=self.device)
+        
+        # for remove background gaussians inside the instance box
+        self.instance_trans = None
+        self.instance_quats = None
+        self.instance_size = None
         
     @property
     def sh_degree(self):
@@ -155,7 +161,14 @@ class VanillaGaussians(nn.Module):
         radii: torch.Tensor,
         xys_grad: torch.Tensor,
         last_size: int,
+        instance_trans: torch.Tensor = None,
+        instance_quats: torch.Tensor = None,
+        instance_size: torch.Tensor = None,
     ) -> None:
+        self.instance_trans = instance_trans
+        self.instance_quats = instance_quats
+        self.instance_size = instance_size
+
         self.after_train(radii, xys_grad, last_size)
         if step % self.ctrl_cfg.refine_interval == 0:
             self.refinement_after(step, optimizer)
@@ -308,6 +321,8 @@ class VanillaGaussians(nn.Module):
         n_bef = self.num_points
         # cull transparent ones
         culls = (self.get_opacity.data < self.ctrl_cfg.cull_alpha_thresh).squeeze()
+        if self.ctrl_cfg.cull_inside_of_instance_box:
+            culls = culls | self.get_inside_of_instance_box_mask()
         if self.step > self.ctrl_cfg.reset_alpha_interval:
             # cull huge ones
             toobigs = (
@@ -374,6 +389,64 @@ class VanillaGaussians(nn.Module):
         dup_scales = self._scales[dup_mask]
         dup_quats = self._quats[dup_mask]
         return dup_means, dup_feature_dc, dup_feature_rest, dup_opacities, dup_scales, dup_quats
+
+    def get_inside_of_instance_box_mask(self):
+        """
+        현재 프레임의 instance box 범위 안에 있는 가우시안들을 식별하는 마스크를 생성합니다.
+        
+        Returns:
+            torch.Tensor: (num_gaussians,) 크기의 boolean mask. 
+                         True인 경우 해당 가우시안이 instance box 안에 있음을 의미.
+        """
+        if self.instance_trans is None or self.instance_quats is None or self.instance_size is None:
+            # instance 정보가 없으면 모든 가우시안을 유지 (아무것도 제거하지 않음)
+            return torch.zeros_like(self._means[:, 0]).bool()
+        
+        # 가우시안 포인트들
+        gaussian_pts = self._means  # (num_gaussians, 3)
+        
+        # 전체 마스크 초기화
+        inside_mask = torch.zeros_like(gaussian_pts[:, 0]).bool()
+        
+        # 현재 프레임의 모든 instance에 대해 확인
+        # instance_trans: (num_instances, 3), instance_quats: (num_instances, 4), instance_size: (num_instances, 3)
+        num_instances = self.instance_trans.shape[0]
+        
+        for ins_id in range(num_instances):
+            # instance의 translation과 rotation 정보 가져오기
+            ins_trans = self.instance_trans[ins_id].to(gaussian_pts.device)  # (3,)
+            ins_quat = self.instance_quats[ins_id].to(gaussian_pts.device)   # (4,)
+            ins_size = self.instance_size[ins_id].to(gaussian_pts.device)    # (3,)
+            
+            # quaternion을 rotation matrix로 변환
+            ins_quat_normalized = ins_quat / ins_quat.norm(dim=-1, keepdim=True)
+            rot_mat = quat_to_rotmat(ins_quat_normalized.unsqueeze(0)).squeeze(0)  # (3, 3)
+            
+            # 4x4 transformation matrix 생성 (object to world)
+            o2w = torch.eye(4, device=gaussian_pts.device)
+            o2w[:3, :3] = rot_mat
+            o2w[:3, 3] = ins_trans
+            
+            # world to object transformation matrix 계산
+            w2o = torch.inverse(o2w)
+            
+            # 가우시안 포인트들을 instance의 local coordinate system으로 변환
+            o_pts = transform_points(gaussian_pts, w2o)
+            
+            # bounding box 안에 있는 포인트들 확인
+            mask = (
+                (o_pts[:, 0] > -ins_size[0] / 2)
+                & (o_pts[:, 0] < ins_size[0] / 2)
+                & (o_pts[:, 1] > -ins_size[1] / 2)
+                & (o_pts[:, 1] < ins_size[1] / 2)
+                & (o_pts[:, 2] > -ins_size[2] / 2)
+                & (o_pts[:, 2] < ins_size[2] / 2)
+            )
+            
+            # OR 연산으로 마스크 결합
+            inside_mask = inside_mask | mask
+        
+        return inside_mask
 
     def get_gaussians(self, cam: dataclass_camera) -> Dict:
         filter_mask = torch.ones_like(self._means[:, 0], dtype=torch.bool)

@@ -22,7 +22,7 @@ from nuscenes.eval.common.loaders import load_prediction, add_center_dist, _get_
 from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
 import sys
 sys.path.append('/workspace/drivestudio')
-from seongjun_tools.splits import create_splits_scenes
+from seongjun_tools.utils.splits import create_splits_scenes
 # from nuscenes.utils.splits import create_splits_scenes
 from nuscenes.utils.data_classes import Box
 from nuscenes.utils.geometry_utils import points_in_box
@@ -136,7 +136,7 @@ def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> 
     if eval_split in {'train', 'val', 'train_detect', 'train_track'}:
         assert version.endswith('trainval'), \
             'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
-    elif eval_split in {'mini_train', 'mini_val'}:
+    elif eval_split in {'mini_train', 'mini_val', 'mini_trainval'}:
         assert version.endswith('mini'), \
             'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
     elif eval_split == 'test':
@@ -536,7 +536,7 @@ def main() -> None:
     nusc = NuScenes(
         version=args.version, dataroot=args.dataroot, verbose=args.verbose)
     eval_set_map = {
-        'v1.0-mini': 'mini_val',
+        'v1.0-mini': 'mini_trainval',
         'v1.0-trainval': 'val',
     }
 

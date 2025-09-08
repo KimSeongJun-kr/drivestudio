@@ -34,7 +34,8 @@ class SingleTrainer(BasicTrainer):
         
     def _init_models(self):
         # gaussian model classes
-        self.gaussian_classes["Background"] = GSModelType.Background
+        if "Background" in self.model_config:
+            self.gaussian_classes["Background"] = GSModelType.Background
      
         for class_name, model_cfg in self.model_config.items():
             # update model config for gaussian classes
@@ -77,6 +78,8 @@ class SingleTrainer(BasicTrainer):
         self,
         dataset: DrivingDataset,
     ) -> None:
+        # dataset 참조 저장 (p2p_dist loss에서 lidar_source 접근용)
+        self.dataset = dataset
         for class_name in self.gaussian_classes:
             model_cfg = self.model_config[class_name]
             model = self.models[class_name]
@@ -176,7 +179,6 @@ class SingleTrainer(BasicTrainer):
             cam=processed_cam,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
-            render_mode="RGB+ED",
             radius_clip=self.render_cfg.get('radius_clip', 0.)
         )
         

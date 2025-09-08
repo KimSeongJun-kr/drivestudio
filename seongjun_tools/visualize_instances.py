@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+from numpy.linalg import det
 import tqdm
 from typing import Callable, Tuple, List, Dict, Optional
 from collections import defaultdict, OrderedDict
@@ -26,7 +27,8 @@ from nuscenes.eval.tracking.data_classes import TrackingBox
 from nuscenes.eval.common.data_classes import EvalBoxes
 from nuscenes.eval.common.loaders import load_prediction, add_center_dist, filter_eval_boxes
 from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
-from nuscenes.utils.splits import create_splits_scenes
+# from nuscenes.utils.splits import create_splits_scenes
+from seongjun_tools.utils.splits import create_splits_scenes
 from nuscenes.utils.data_classes import LidarPointCloud
 import abc
 from typing import Union
@@ -120,7 +122,7 @@ def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> 
     if eval_split in {'train', 'val', 'train_detect', 'train_track'}:
         assert version.endswith('trainval'), \
             'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
-    elif eval_split in {'mini_train', 'mini_val'}:
+    elif eval_split in {'mini_train', 'mini_val', 'mini_trainval'}:
         assert version.endswith('mini'), \
             'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
     elif eval_split == 'test':
@@ -1073,19 +1075,23 @@ def main() -> None:
     parser.add_argument(
         "--gaussian_boxes",
         type=str,
-        default='/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar2.json',
+        # default='/workspace/drivestudio/output/feasibility_check/updated/poses_selected_tar2.json',
+        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_tracking.json',
+        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_noisy.json',
         help="Path to gaussian boxes json file",
     )
     parser.add_argument(
         "--pred_boxes",
         type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_selected_tar1.json',
+        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_selected_tar1.json',
+        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc.json',
         help="Path to prediction boxes json file",
     )
     parser.add_argument(
         "--gt_boxes",
         type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json',
+        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json',
+        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred.json',
         help="Path to ground truth boxes json file",
     )
     parser.add_argument(
@@ -1109,14 +1115,14 @@ def main() -> None:
     parser.add_argument(
         "--save_dir",
         type=str,
-        # default=None,
-        default='/workspace/drivestudio/output/feasibility_check/updated/plots',
+        default=None,
+        # default='/workspace/drivestudio/output/feasibility_check/updated/plots',
         help="Path to save the 3D visualization plot"
     )
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-0061',
+        default='scene-0103',
         # default=None,
         help="Scene name to visualize boxes (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
                                                 "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
@@ -1141,9 +1147,15 @@ def main() -> None:
         help="특정 sample만 시각화 (sample token 지정)"
     )
     parser.add_argument(
+        "--sample_index",
+        type=int,
+        default=3,
+        help="특정 sample만 시각화 (scene 내 시간순 인덱스, 0부터 시작). 지정 시 --scene_name 필수. --sample_token 보다 우선 적용"
+    )
+    parser.add_argument(
         "--visualize_individual_samples",
         type=bool,
-        default=True,
+        default=False,
         help="모든 sample을 개별적으로 시각화"
     )
     parser.add_argument(
@@ -1227,6 +1239,23 @@ def main() -> None:
         gt_boxes = add_ego_pose(nusc, gt_boxes)
 
     # Open3D 3D 시각화
+    # sample_index 우선 해석: scene의 시간순 샘플에서 인덱스로 sample_token을 결정
+    resolved_sample_token = args.sample_token
+    if args.sample_index is not None:
+        if not args.scene_name:
+            print("⚠️ --sample_index를 사용하려면 --scene_name을 함께 지정해야 합니다.")
+            return
+        scene_sample_tokens_for_index = _get_scene_sample_tokens_chronologically(nusc, args.scene_name)
+        if not scene_sample_tokens_for_index:
+            print(f"⚠️ Scene '{args.scene_name}'을 찾을 수 없거나 샘플이 없습니다.")
+            return
+        if args.sample_index < 0 or args.sample_index >= len(scene_sample_tokens_for_index):
+            print(f"⚠️ sample_index {args.sample_index}가 범위를 벗어났습니다. (0 ~ {len(scene_sample_tokens_for_index)-1})")
+            return
+        if args.sample_token:
+            print("ℹ️ --sample_index가 제공되어 --sample_token 보다 우선 적용됩니다.")
+        resolved_sample_token = scene_sample_tokens_for_index[args.sample_index]
+        print(f"🎯 인덱스로 선택된 sample_token: {resolved_sample_token}")
     if args.visualize_individual_samples:
         # 모든 sample을 개별적으로 시각화
         print("모든 sample을 개별적으로 시각화합니다...")
@@ -1254,7 +1283,7 @@ def main() -> None:
             score_threshold=args.score_threshold, 
             save_path=args.save_dir, 
             max_boxes=args.max_boxes,
-            sample_token=args.sample_token,
+            sample_token=resolved_sample_token,
             show_lidar=args.show_lidar,
             nusc=nusc,
             max_lidar_points=args.max_lidar_points

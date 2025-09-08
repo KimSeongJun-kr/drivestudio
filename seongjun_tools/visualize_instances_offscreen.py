@@ -18,7 +18,8 @@ from nuscenes.eval.detection.utils import category_to_detection_name
 from nuscenes.eval.tracking.data_classes import TrackingBox
 from nuscenes.eval.common.data_classes import EvalBoxes
 from nuscenes.eval.common.loaders import load_prediction
-from nuscenes.utils.splits import create_splits_scenes
+# from nuscenes.utils.splits import create_splits_scenes
+from seongjun_tools.utils.splits import create_splits_scenes
 from nuscenes.utils.data_classes import LidarPointCloud
 
 # Constants for Open3D box edges (12 edges for a 3D box)

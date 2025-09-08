@@ -56,6 +56,9 @@ class RigidNodes(VanillaGaussians):
         instances_pose = []
         instances_size = []
         instances_fv = []
+        instances_detection_name = []
+        instances_instance_token = []
+        instances_true_id = []
         point_ids = []
         for id_in_model, (id_in_dataset, v) in enumerate(instance_pts_dict.items()):
             init_means.append(v["pts"])
@@ -63,12 +66,18 @@ class RigidNodes(VanillaGaussians):
             instances_pose.append(v["poses"].unsqueeze(1))
             instances_size.append(v["size"])
             instances_fv.append(v["frame_info"].unsqueeze(1))
+            instances_detection_name.append(v["detection_name"])
+            instances_instance_token.append(v["instance_token"])
+            instances_true_id.append(v["true_id"])
             point_ids.append(torch.full((v["num_pts"], 1), id_in_model, dtype=torch.long))
         init_means = torch.cat(init_means, dim=0).to(self.device) # (N, 3)
         init_colors = torch.cat(init_colors, dim=0).to(self.device) # (N, 3)
         instances_pose = torch.cat(instances_pose, dim=1).to(self.device) # (num_frame, num_instances, 4, 4)
         self.instances_size = torch.stack(instances_size).to(self.device) # (num_instances, 3)
         self.instances_fv = torch.cat(instances_fv, dim=1).to(self.device) # (num_frame, num_instances)
+        self.instances_detection_name = instances_detection_name
+        self.instances_instance_token = instances_instance_token
+        self.instances_true_id = instances_true_id
         self.point_ids = torch.cat(point_ids, dim=0).to(self.device)
         instances_quats = self.get_instances_quats(instances_pose)
         instances_trans = instances_pose[..., :3, 3]
@@ -424,7 +433,7 @@ class RigidNodes(VanillaGaussians):
 
     def get_instance_activated_gs_dict(self, ins_id: int) -> Dict[str, torch.Tensor]:
         pts_mask = self.point_ids[..., 0] == ins_id
-        if pts_mask.sum() < 100:
+        if pts_mask.sum() == 0:
             return None
         local_means = self._means[pts_mask]
         activated_opacities = torch.sigmoid(self._opacities[pts_mask])
@@ -458,24 +467,55 @@ class RigidNodes(VanillaGaussians):
 
         # temporal smooth regularization
         temporal_smooth_reg = self.reg_cfg.get("temporal_smooth_reg", None)
-        if temporal_smooth_reg is not None:
+        start_from = temporal_smooth_reg.get("start_from", 0)
+        if temporal_smooth_reg is not None and self.step > start_from:
             instance_mask = self.instances_fv[self.cur_frame]
             if instance_mask.sum() > 0:
-                trans_cfg = temporal_smooth_reg.get("trans", None)
-                if trans_cfg is not None:
-                    fi_interval = random.randint(1, trans_cfg.smooth_range)
-                    if self.cur_frame >= fi_interval and self.cur_frame < self.num_frames - fi_interval:
-                        valid_mask = (
-                            self.instances_fv[self.cur_frame - fi_interval] & \
-                            self.instances_fv[self.cur_frame + fi_interval] & \
-                            self.instances_fv[self.cur_frame]
-                        )
-                        if valid_mask.sum() > 0:
+                fi_interval = random.randint(1, temporal_smooth_reg.smooth_range)
+                if self.cur_frame >= fi_interval and self.cur_frame < self.num_frames - fi_interval:
+                    valid_mask = (
+                        self.instances_fv[self.cur_frame - fi_interval] & \
+                        self.instances_fv[self.cur_frame + fi_interval] & \
+                        self.instances_fv[self.cur_frame]
+                    )
+                    if valid_mask.sum() > 0:
+                        trans_cfg = temporal_smooth_reg.get("trans", None)
+                        if trans_cfg is not None:
                             cur_trans = self.instances_trans[self.cur_frame]
                             pre_trans = self.instances_trans[self.cur_frame - fi_interval].data
                             next_trans = self.instances_trans[self.cur_frame + fi_interval].data
                             loss = (next_trans[valid_mask] + pre_trans[valid_mask] - 2 * cur_trans[valid_mask]).abs().mean()
                             loss_dict["trans_temporal_smooth"] = loss * trans_cfg.w
+                        rot_cfg = temporal_smooth_reg.get("rot", None)
+                        if rot_cfg is not None:
+                            cur_quats = self.quat_act(self.instances_quats[self.cur_frame])
+                            pre_quats = self.instances_quats[self.cur_frame - fi_interval].data
+                            next_quats = self.instances_quats[self.cur_frame + fi_interval].data
+                            
+                            # 중간점에서의 예상 quaternion을 interpolation으로 계산
+                            expected_quats = interpolate_quats(pre_quats[valid_mask], next_quats[valid_mask], fraction=0.5)
+                            expected_quats = self.quat_act(expected_quats)
+                            
+                            # quaternion double cover 문제 해결: q와 -q는 같은 rotation을 나타냄
+                            # 더 가까운 쪽을 선택하여 정확한 angular distance 계산
+                            dot_product = (cur_quats[valid_mask] * expected_quats).sum(dim=-1, keepdim=True)
+                            expected_quats = torch.where(dot_product < 0, -expected_quats, expected_quats)
+                            dot_product = (cur_quats[valid_mask] * expected_quats).sum(dim=-1)  # now dot in [0,1]
+                            
+                            # angular distance 계산 (이제 abs() 불필요)
+                            # angular_distance = 1.0 - dot_product.pow(2)
+                            angular_distance = 1.0 - dot_product
+                            loss = angular_distance.mean()
+                            loss_dict["rot_temporal_smooth"] = loss * rot_cfg.w
+
+        out_of_bound_losscfg = self.reg_cfg.get("out_of_bound_loss", None)
+        if out_of_bound_losscfg is not None:
+            w = out_of_bound_losscfg.w
+
+            if w > 0 and self._means is not None:
+                per_pts_size = self.instances_size[self.point_ids[..., 0]]
+                loss_dict["out_of_bound_loss"] = torch.relu(self._means.abs() - per_pts_size / 2).mean() * w
+
         return loss_dict
 
     def state_dict(self) -> Dict:
@@ -484,6 +524,9 @@ class RigidNodes(VanillaGaussians):
             "points_ids": self.point_ids,
             "instances_size": self.instances_size,
             "instances_fv": self.instances_fv,
+            "instances_detection_name": self.instances_detection_name,
+            "instances_instance_token": self.instances_instance_token,
+            "instances_true_id": self.instances_true_id,
         })
         return state_dict
     
@@ -497,6 +540,9 @@ class RigidNodes(VanillaGaussians):
         self.instances_quats = Parameter(
             torch.zeros(self.num_frames, self.num_instances, 4, device=self.device)
         )
+        self.instances_detection_name = state_dict.pop("instances_detection_name")
+        self.instances_instance_token = state_dict.pop("instances_instance_token")
+        self.instances_true_id = state_dict.pop("instances_true_id")
         msg = super().load_state_dict(state_dict, **kwargs)
         return msg
     

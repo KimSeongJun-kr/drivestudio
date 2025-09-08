@@ -379,12 +379,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gaussian Renderer – 단일 뷰 이미지 생성")
     parser.add_argument("--checkpoint_path",
                       type=str,
-                      default="/workspace/drivestudio/output/feasibility_check/updated/run_update_scene_1_date_0529_try_1/checkpoint_final.pth")
+                      default="/workspace/drivestudio/output/box_experiments_0714/sh_degree_try1_d2/checkpoint_80000_final.pth")
     parser.add_argument("--out", type=str, 
                         default=None, 
                         help="저장할 이미지 파일명")
     parser.add_argument("--pose", type=float, nargs=6, metavar=("X","Y","Z","ROLL","PITCH","YAW"),
-                        default=[17.0, -15.0, 72.0,      -35.2, -7.0, 0.0],
+                        # default=[15.0, -35.0, 90.0,      -90.0, -75.0, 0.0],
+                        default=[17.0, -15.0, 72.0,      -35.2, -7.0, 0.0],                      
                         help="카메라 포즈 매개변수: x y z roll pitch yaw (degrees)")
     parser.add_argument("--fov", type=float, default=60.0, help="수평 시야각(Field of view) [deg]")
     parser.add_argument("--width", type=int, default=800, help="출력 이미지 가로 크기")
