@@ -378,6 +378,8 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
     tmp_idx = 0
     for instance_token in instance_wise_tar_boxes.keys():
         tar_boxes_instance = instance_wise_tar_boxes[instance_token]
+        if instance_token not in instance_wise_gt_boxes:
+            continue
         gt_boxes_instance = instance_wise_gt_boxes[instance_token]
         metric_data, raw_err_data = accumulate(gt_boxes_instance, tar_boxes_instance)
 
