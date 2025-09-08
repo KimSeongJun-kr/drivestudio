@@ -45,5 +45,5 @@ data:
     lidar_percentile: 0.02  # percentile to compute aabb from lidar
     expand_depth: # expand depth
       use_expand_depth: False # whether to use expand depth
-      expand_number: 1 # number of expand depth  
+      expand_number: 0 # number of expand depth  
       only_visible_points: False
