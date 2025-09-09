@@ -159,6 +159,7 @@ def main(args):
         logger.info(
             f"Training from scratch, initializing gaussians from dataset, starting at step {trainer.step}"
         )
+    trainer.set_dataset(dataset=dataset)
     
     if args.enable_viewer:
         # a simple viewer for background visualization

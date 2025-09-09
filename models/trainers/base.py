@@ -814,8 +814,8 @@ class BasicTrainer(nn.Module):
         else:
             dynamic_mask = image_infos["dynamic_masks"].bool()            
             
-        if self.dataset.data_cfg.pixel_source.only_dynamic:                
-            valid_loss_mask = valid_loss_mask * dynamic_mask.bool()
+        # if self.dataset.data_cfg.pixel_source.only_dynamic:                
+        #     valid_loss_mask = valid_loss_mask * dynamic_mask.bool()
             
             if valid_loss_mask.sum() == 0:
                 return loss_dict, selective_loss_dict
