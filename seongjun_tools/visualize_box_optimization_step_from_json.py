@@ -14,10 +14,16 @@ import re
 from PIL import Image, ImageDraw, ImageFont
 from collections import defaultdict
 
+import sys
+sys.path.append('/workspace/drivestudio')
+from seongjun_tools.utils.loaders import load_gt, load_prediction, add_center_dist
+from seongjun_tools.evaluate_3dbb_instancewise import extract_boxes_from_json_to_evalboxes
+from seongjun_tools.utils.detection.data_classes import DetectionBox, DetectionMetricDataList, DetectionMetrics, DetectionMetricData
+
 from nuscenes import NuScenes
-from nuscenes.eval.detection.data_classes import DetectionBox
+# from nuscenes.eval.detection.data_classes import DetectionBox
 from nuscenes.eval.common.data_classes import EvalBoxes
-from nuscenes.eval.common.loaders import load_prediction
+# from nuscenes.eval.common.loaders import load_prediction
 from nuscenes.eval.detection.config import config_factory
 from nuscenes.utils.data_classes import LidarPointCloud
 from scipy.spatial.transform import Rotation as R
@@ -280,7 +286,7 @@ def render_and_save_offscreen(geometries, save_path, w=1920, h=1080, view_width_
 
                     left,  right = -half_width,  half_width
                     bottom, top  = -half_height, half_height
-                    near, far = 0.1, float(extent[2] + 100.0)
+                    near, far = 0.1, float(extent[2] + 500.0)
 
                     # Open3D API를 사용한 직교 투영 (enum + frustum)
                     renderer.scene.camera.set_projection(
@@ -636,17 +642,13 @@ def _add_boxes_to_geometries_from_dict(frame_boxes: Dict[int, List],
     
     return geometries
 
-def _add_boxes_to_geometries_from_evalboxes(boxes: Optional['EvalBoxes'], 
-                            sample_token: str,
+def _add_boxes_to_geometries_from_evalboxes(boxes: Optional[List[DetectionBox]], 
                             color: Tuple[float, float, float],
                             use_ego_coordinates: bool = True) -> List:
     """박스들을 기하학적 객체로 변환합니다."""
     geometries = []
     
-    if not boxes or sample_token not in boxes.sample_tokens:
-        return geometries
-    
-    for box in boxes[sample_token]:
+    for box in boxes:
         if not (hasattr(box, 'translation') and box.translation is not None and
                 hasattr(box, 'size') and box.size is not None and
                 hasattr(box, 'rotation') and box.rotation is not None):
@@ -724,131 +726,136 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
         print(f"📡 LiDAR 포인트 클라우드 포함 (최대 {max_lidar_points:,}개 포인트)")
     
     # 샘플별 애니메이션 생성
-    if scene_name or sample_token:
-        # ---------- 새로운 구현: 체크포인트를 한 번만 로드해 모든 샘플 처리 ----------
-
-        # 0) 처리할 sample token 목록 결정
-        scene_sample_tokens: List[str] = []
-        if scene_name and nusc is not None:
-            print(f"🎬 Scene '{scene_name}'의 샘플들을 시간순으로 처리합니다")
-            scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
-            if not scene_sample_tokens:
-                print(f"❌ Scene '{scene_name}'을 찾을 수 없거나 샘플이 없습니다")
-                return
-            print(f"🎯 Scene '{scene_name}'에서 {len(scene_sample_tokens)}개 샘플 프레임 발견")
-        elif sample_token:
-            scene_sample_tokens = [sample_token]
-            print(f"🎯 특정 샘플만 처리: {sample_token}")
-        else:
-            print("⚠️ scene_name과 sample_token이 모두 제공되지 않아 샘플을 결정할 수 없습니다")
+    # 0) 처리할 sample token 목록 결정
+    scene_sample_tokens: List[str] = []
+    if scene_name and nusc is not None:
+        print(f"🎬 Scene '{scene_name}'의 샘플들을 시간순으로 처리합니다")
+        scene_sample_tokens = _get_scene_sample_tokens_chronologically(nusc, scene_name)
+        if not scene_sample_tokens:
+            print(f"❌ Scene '{scene_name}'을 찾을 수 없거나 샘플이 없습니다")
             return
+        print(f"🎯 Scene '{scene_name}'에서 {len(scene_sample_tokens)}개 샘플 프레임 발견")
+    elif sample_token:
+        scene_sample_tokens = [sample_token]
+        print(f"🎯 특정 샘플만 처리: {sample_token}")
+    else:
+        print("⚠️ scene_name과 sample_token이 모두 제공되지 않아 샘플을 결정할 수 없습니다")
+        return
 
-        # 1) 샘플 컨텍스트 초기화 (LiDAR, 출력 디렉토리 등)
-        sample_contexts: Dict[str, Dict[str, Any]] = {}
-        for sample_idx, current_sample_token in enumerate(scene_sample_tokens):
-            lidar_points = None
-            if show_lidar and nusc is not None:
-                lidar_points = load_lidar_pointcloud(nusc, current_sample_token)
-                if lidar_points is None:
-                    print(f"❌ LiDAR 포인트 로드 실패: {current_sample_token}")
+    # 1) 샘플 컨텍스트 초기화 (LiDAR, 출력 디렉토리 등)
+    sample_contexts: Dict[str, Dict[str, Any]] = {}
+    for sample_idx, current_sample_token in enumerate(scene_sample_tokens):
+        lidar_points = None
+        if show_lidar and nusc is not None:
+            lidar_points = load_lidar_pointcloud(nusc, current_sample_token)
+            if lidar_points is None:
+                print(f"❌ LiDAR 포인트 로드 실패: {current_sample_token}")
 
-            sample_output_dir = os.path.join(output_dir, "images", f"sample_{sample_idx:02d}_{current_sample_token}")
-            os.makedirs(sample_output_dir, exist_ok=True)
+        sample_output_dir = os.path.join(output_dir, "images", f"sample_{sample_idx:02d}_{current_sample_token}")
+        os.makedirs(sample_output_dir, exist_ok=True)
 
-            sample_contexts[current_sample_token] = {
-                'idx': sample_idx,
-                'lidar_points': lidar_points,
-                'output_dir': sample_output_dir,
-                'frame_images': []
-            }
-        print(f"\n🎬 샘플 {len(scene_sample_tokens)}개 초기화 완료")
-
-        # 2) camera_front_start (scene 기준) 한 번만 계산
-        camera_front_start = None
-        if nusc is not None and scene_name:
-            camera_front_start = get_camera_front_start_pose(nusc.dataroot, scene_name, nusc.version)
-            if camera_front_start is not None:
-                print("✅ Camera front start pose 로드 완료 (1회)")
-
-        # 3) 노드 타입별 색상 매핑 (고정)
-        color_mapping = {
-            'RigidNodes': (1.0, 0.0, 0.0),
-            'SMPLNodes': (1.0, 0.2, 0.0),
-            'DeformableNodes': (1.0, 0.25, 0.3),
-            'Unknown': (1.0, 0.2, 0.11)
+        sample_contexts[current_sample_token] = {
+            'idx': sample_idx,
+            'lidar_points': lidar_points,
+            'output_dir': sample_output_dir,
+            'frame_images': []
         }
+    print(f"\n🎬 샘플 {len(scene_sample_tokens)}개 초기화 완료")
 
-        total_iterations = box_poses_files[-1][0]
+    # 2) camera_front_start (scene 기준) 한 번만 계산
+    camera_front_start = None
+    if nusc is not None and scene_name:
+        camera_front_start = get_camera_front_start_pose(nusc.dataroot, scene_name, nusc.version)
+        if camera_front_start is not None:
+            print("✅ Camera front start pose 로드 완료 (1회)")
 
-        # 4) 체크포인트를 순차적으로 처리하며 모든 샘플 이미지 저장
-        for bp_idx, (iteration, json_path) in enumerate(box_poses_files):
-            print(f"\n🔄 Box poses {bp_idx+1}/{len(box_poses_files)} 처리 중 - Iteration {iteration:06d}")       
+    # 3) 노드 타입별 색상 매핑 (고정)
+    color_mapping = {
+        'RigidNodes': (1.0, 0.0, 0.0),
+        'SMPLNodes': (1.0, 0.2, 0.0),
+        'DeformableNodes': (1.0, 0.25, 0.3),
+        'Unknown': (1.0, 0.2, 0.11)
+    }
 
-            all_frame_boxes = extract_all_boxes_from_json(json_path)
-            if all_frame_boxes and nusc is not None and scene_sample_tokens:
-                all_frame_boxes = add_ego_pose_to_boxes(nusc, all_frame_boxes, scene_sample_tokens)
+    total_iterations = box_poses_files[-1][0]
 
-            for idx, current_sample_token in tqdm(enumerate(scene_sample_tokens), 
-                                                  total=len(scene_sample_tokens),
-                                                  desc=f"Box pose {bp_idx+1}/{len(box_poses_files)} 처리중",
-                                                  leave=False):
-                ctx = sample_contexts[current_sample_token]
-                sample_idx = ctx['idx']
-                sample_output_dir = ctx['output_dir']
-                lidar_points = ctx['lidar_points']
+    # 4) 체크포인트를 순차적으로 처리하며 모든 샘플 이미지 저장
+    for bp_idx, (iteration, json_path) in enumerate(box_poses_files):
+        print(f"\n🔄 Box poses {bp_idx+1}/{len(box_poses_files)} 처리 중 - Iteration {iteration:06d}")       
 
-                frame_path = os.path.join(sample_output_dir, f"frame_{bp_idx:02d}_iter_{iteration:06d}.png")
-                if os.path.exists(frame_path):
-                    # print(f"skip frame: {Path(frame_path).name}")
+        # box_poses JSON → EvalBoxes 변환 (scene 샘플 토큰 순서에 맞춰 매핑)
+        tar_boxes = extract_boxes_from_json_to_evalboxes(json_path, scene_sample_tokens)
+        if tar_boxes and nusc is not None and scene_sample_tokens:
+            tar_boxes = add_ego_pose(nusc, tar_boxes)
+
+        for idx, current_sample_token in tqdm(enumerate(scene_sample_tokens), 
+                                                total=len(scene_sample_tokens),
+                                                desc=f"Box pose {bp_idx+1}/{len(box_poses_files)} 처리중",
+                                                leave=False):
+            ctx = sample_contexts[current_sample_token]
+            sample_idx = ctx['idx']
+            sample_output_dir = ctx['output_dir']
+            lidar_points = ctx['lidar_points']
+
+            frame_path = os.path.join(sample_output_dir, f"frame_{bp_idx:02d}_iter_{iteration:06d}.png")
+            if os.path.exists(frame_path):
+                # print(f"skip frame: {Path(frame_path).name}")
+                ctx['frame_images'].append(frame_path)
+                continue
+
+            # --------- 시각화용 Geometry 생성 ---------
+            geometries = [o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0)]
+
+            if lidar_points is not None:
+                lidar_pcd = create_open3d_pointcloud(lidar_points, color=(0.25, 0.25, 0.25), max_points=max_lidar_points)
+                geometries.append(lidar_pcd)
+
+            filtered_tar_boxes = tar_boxes[current_sample_token]
+            filtered_pred_boxes = pred_boxes[current_sample_token]
+            filtered_gt_boxes = gt_boxes[current_sample_token]
+
+            # instance_token 교집합으로 세 집합 모두 필터링
+            tar_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_tar_boxes if getattr(b, 'instance_token', '')}
+            pred_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_pred_boxes if getattr(b, 'instance_token', '')}
+            gt_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_gt_boxes if getattr(b, 'instance_token', '')}
+            common_inst_tokens = tar_inst_tokens & pred_inst_tokens & gt_inst_tokens
+
+            if common_inst_tokens:
+                filtered_tar_boxes = [b for b in filtered_tar_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
+                filtered_pred_boxes = [b for b in filtered_pred_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
+                filtered_gt_boxes = [b for b in filtered_gt_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
+
+            print(f"filtered_tar_boxes: {len(filtered_tar_boxes)}, filtered_pred_boxes: {len(filtered_pred_boxes)}, filtered_gt_boxes: {len(filtered_gt_boxes)}")
+            if len(filtered_tar_boxes) > 0:
+                geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_tar_boxes,(1.0, 0.0, 0.0)))
+            if len(filtered_pred_boxes) > 0:
+                geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_pred_boxes, (0.0, 0.0, 1.0)))
+            if len(filtered_gt_boxes) > 0:
+                geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_gt_boxes, (0.0, 0.0, 0.0)))
+
+            # 렌더링 및 저장
+            success = render_and_save_offscreen(geometries, frame_path, w=1920, h=1080, view_width_m=100)
+            if success and os.path.exists(frame_path) and os.path.getsize(frame_path) > 1000:
+                if add_text_overlay_to_image(frame_path, scene_name if scene_name else "Unknown Scene", sample_idx, iteration, total_iterations):
                     ctx['frame_images'].append(frame_path)
-                    continue
-
-                # --------- 시각화용 Geometry 생성 ---------
-                geometries = [o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0)]
-
-                if lidar_points is not None:
-                    lidar_pcd = create_open3d_pointcloud(lidar_points, color=(0.25, 0.25, 0.25), max_points=max_lidar_points)
-                    geometries.append(lidar_pcd)
-
-                if all_frame_boxes:
-                    frame_id = sample_idx * 5  # 5의 배수로 매핑
-                    box_geometries = _add_boxes_to_geometries_from_dict(
-                        all_frame_boxes,
-                        frame_id,
-                        color_mapping,
-                        use_ego_coordinates=True
-                    )
-                    geometries.extend(box_geometries)
-
-                # pred / gt boxes
-                if pred_boxes and current_sample_token in pred_boxes.sample_tokens:
-                    geometries.extend(_add_boxes_to_geometries_from_evalboxes(pred_boxes, current_sample_token, (0.0, 0.0, 1.0)))
-                if gt_boxes and current_sample_token in gt_boxes.sample_tokens:
-                    geometries.extend(_add_boxes_to_geometries_from_evalboxes(gt_boxes, current_sample_token, (0.0, 0.0, 0.0)))
-
-                # 렌더링 및 저장
-                success = render_and_save_offscreen(geometries, frame_path, w=1920, h=1080, view_width_m=100)
-                if success and os.path.exists(frame_path) and os.path.getsize(frame_path) > 1000:
-                    if add_text_overlay_to_image(frame_path, scene_name if scene_name else "Unknown Scene", sample_idx, iteration, total_iterations):
-                        ctx['frame_images'].append(frame_path)
-                    else:
-                        ctx['frame_images'].append(frame_path)
                 else:
-                    print(f"  ❌ 이미지 저장 실패: {frame_path}")
-
-        # 5) GIF 생성 (체크포인트 처리 후)
-        for current_sample_token, ctx in sample_contexts.items():
-            if ctx['frame_images']:
-                animation_name = f"box_optimization_sample_{ctx['idx']:02d}_{current_sample_token}.gif"
-                create_gif_animation_from_files(ctx['frame_images'], output_dir, animation_name)
-                print(f"  ✅ 샘플 {current_sample_token} 애니메이션 완료: {ctx['output_dir']}")
+                    ctx['frame_images'].append(frame_path)
             else:
-                print(f"  ❌ 샘플 {current_sample_token}에 대한 유효한 이미지가 없습니다")
+                print(f"  ❌ 이미지 저장 실패: {frame_path}")
 
-        print(f"\n🎉 모든 애니메이션 생성 완료! 결과: {output_dir}")
-        return  # 기존 로직 실행 방지
+    # 5) GIF 생성 (체크포인트 처리 후)
+    for current_sample_token, ctx in sample_contexts.items():
+        if ctx['frame_images']:
+            animation_name = f"box_optimization_sample_{ctx['idx']:02d}_{current_sample_token}.gif"
+            create_gif_animation_from_files(ctx['frame_images'], output_dir, animation_name)
+            print(f"  ✅ 샘플 {current_sample_token} 애니메이션 완료: {ctx['output_dir']}")
+        else:
+            print(f"  ❌ 샘플 {current_sample_token}에 대한 유효한 이미지가 없습니다")
 
     print(f"\n🎉 모든 애니메이션 생성 완료! 결과: {output_dir}")
+
+    return  # 기존 로직 실행 방지
+
 
 def add_text_overlay_to_image(image_path: str, scene_name: str, frame_idx: int, 
                              iteration: int, total_iterations: int) -> bool:
@@ -1053,7 +1060,7 @@ def main() -> None:
     parser.add_argument(
         "--box_poses_dir",
         type=str,
-        default="/workspace/drivestudio/output/box_experiments_0821/box_bound_try4_p2p5_rots30/box_poses",
+        default="/workspace/drivestudio/output/test/test/box_poses",
         help="Directory containing box pose JSON files (box_poses_*.json)"
     )
     parser.add_argument(
@@ -1081,9 +1088,9 @@ def main() -> None:
     parser.add_argument(
         "--pred_boxes",
         type=str,
-        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_real_selected_tar1.json',
+        default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/sample_annotation_centerpoint_pred.json',
         # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
-        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
+        # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
         help="Path to prediction boxes json file",
     )
     parser.add_argument(
@@ -1127,6 +1134,11 @@ def main() -> None:
     
     args = parser.parse_args()
     
+    eval_set_map = {
+        'v1.0-mini': 'mini_trainval',
+        'v1.0-trainval': 'val',
+    }
+    
     print("🚀 바운딩 박스 최적화 시각화 도구")
     print(f"📁 Box poses 디렉토리: {args.box_poses_dir}")
     print(f"🎬 Scene: {args.scene_name}")
@@ -1150,15 +1162,16 @@ def main() -> None:
                                            config.max_boxes_per_sample, 
                                            DetectionBox,
                                            verbose=args.verbose)
-            pred_boxes = add_ego_pose(nusc, pred_boxes)
+            infer_pred_boxes = EvalBoxes()
+            for box in pred_boxes.all:
+                if box.gt_data == 0 or box.gt_data == -1:
+                    infer_pred_boxes.add_boxes(box.sample_token, [box])
+            pred_boxes = add_ego_pose(nusc, infer_pred_boxes)
         
         # Load ground truth boxes if provided
         if args.gt_boxes and os.path.exists(args.gt_boxes):
             print(f"📊 Ground truth boxes 로딩 중: {args.gt_boxes}")
-            gt_boxes, _ = load_prediction(args.gt_boxes, 
-                                         config.max_boxes_per_sample, 
-                                         DetectionBox,
-                                         verbose=args.verbose)
+            gt_boxes, _ = load_gt(nusc, eval_set_map[args.version], DetectionBox, verbose=args.verbose)
             gt_boxes = add_ego_pose(nusc, gt_boxes)
     
     # 애니메이션 생성

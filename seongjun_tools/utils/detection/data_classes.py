@@ -355,7 +355,8 @@ class DetectionBox(EvalBox):
                  attribute_name: str = '',
                  instance_token: str = '',
                  instance_idx: int = -1,
-                 num_gaussians: int = -1):  # Box attribute. Each box can have at most 1 attribute.
+                 num_gaussians: int = -1,
+                 gt_data: bool = False):  # Box attribute. Each box can have at most 1 attribute.
 
         super().__init__(sample_token, translation, size, rotation, velocity, ego_translation, num_pts)
 
@@ -375,7 +376,7 @@ class DetectionBox(EvalBox):
         self.instance_token = instance_token
         self.instance_idx = instance_idx
         self.num_gaussians = num_gaussians
-
+        self.gt_data = gt_data
     def __eq__(self, other):
         return (self.sample_token == other.sample_token and
                 self.translation == other.translation and
@@ -389,7 +390,8 @@ class DetectionBox(EvalBox):
                 self.attribute_name == other.attribute_name and
                 self.instance_token == other.instance_token and
                 self.instance_idx == other.instance_idx and
-                self.num_gaussians == other.num_gaussians)
+                self.num_gaussians == other.num_gaussians and
+                self.gt_data == other.gt_data)
 
     def serialize(self) -> dict:
         """ Serialize instance into json-friendly format. """
@@ -406,12 +408,17 @@ class DetectionBox(EvalBox):
             'attribute_name': self.attribute_name,
             'instance_token': self.instance_token,
             'instance_idx': self.instance_idx,
-            'num_gaussians': self.num_gaussians
+            'num_gaussians': self.num_gaussians,
+            'gt_data': self.gt_data
         }
 
     @classmethod
     def deserialize(cls, content: dict):
         """ Initialize from serialized content. """
+        if 'gt_data' in content:
+            gt_data = content['gt_data']
+        else:
+            gt_data = False
         return cls(sample_token=content['sample_token'],
                    translation=tuple(content['translation']),
                    size=tuple(content['size']),
@@ -425,7 +432,8 @@ class DetectionBox(EvalBox):
                    attribute_name=content['attribute_name'],
                    instance_token=content['instance_token'],
                    instance_idx=content['instance_idx'],
-                   num_gaussians=content['num_gaussians'])
+                   num_gaussians=content['num_gaussians'],
+                   gt_data=gt_data)
 
 
 class DetectionMetricDataList:

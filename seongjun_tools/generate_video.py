@@ -66,25 +66,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--ckpt_path", type=str, 
-                        # default="/workspace/drivestudio/output/box_experiments_0803/iter_50k_try1_ex10_w1/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0803/iter_50k_try0/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0803/iter_600k_try0/checkpoint_100000.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try1_ex10_w1/checkpoint_100000.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0801/iter_600k_try0/checkpoint_200000.pth"
-                        # default="/workspace/drivestudio/output/feasibility_check_0618/run_updated_scene_1_date_0529_try_1/checkpoint_30000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try1_ex10_w1/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try2_ex1_w10/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try1/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try3_ex1_w10_nd/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try4_ex1_w10_nd_nv/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try5_ex1_w10_nd_nv_bg/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try1/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/iter_50k_try6_ex1_w10_nd_nv_bg_rot/checkpoint_50000_final.pth"
-                        default="/workspace/drivestudio/output/box_experiments_0804/ptop_try2_mahala/checkpoint_50000_final.pth"
-                        # default="/workspace/drivestudio/output/box_experiments_0804/ptop_try5_mahala_w5/checkpoint_50000_final.pth"
+                        default="/workspace/drivestudio/output/box_experiments_0910/gt_seq1_fb/checkpoint_50000_final.pth"
     )
     parser.add_argument("--config_file", help="path to config file", type=str, 
-                        default="/workspace/drivestudio/configs/experiments/0804/video.yaml")
+                        default="/workspace/drivestudio/configs/video.yaml")
     parser.add_argument("--dataset", type=str, 
                         default="nuscenes/6cams_video"
     )

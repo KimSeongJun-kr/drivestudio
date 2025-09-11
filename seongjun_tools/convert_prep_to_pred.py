@@ -209,7 +209,7 @@ def convert_instances_to_predictions(
                 "detection_score": float(score),
                 "attribute_name": "",
                 "instance_token": instance_token,
-                "instance_idx": instance_idx,
+                "instance_idx": int(instance_idx),
                 "num_gaussians": -1,
             }
 
