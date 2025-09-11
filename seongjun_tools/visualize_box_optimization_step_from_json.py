@@ -780,18 +780,17 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
     total_iterations = box_poses_files[-1][0]
 
     # 4) 체크포인트를 순차적으로 처리하며 모든 샘플 이미지 저장
-    for bp_idx, (iteration, json_path) in enumerate(box_poses_files):
-        print(f"\n🔄 Box poses {bp_idx+1}/{len(box_poses_files)} 처리 중 - Iteration {iteration:06d}")       
+    outer = tqdm(box_poses_files, desc="Checkpoints", position=0, leave=True, dynamic_ncols=True)
+    for bp_idx, (iteration, json_path) in enumerate(outer):
+        outer.set_postfix(iter=f"{iteration:06d}", idx=f"{bp_idx+1}/{len(box_poses_files)}")
 
         # box_poses JSON → EvalBoxes 변환 (scene 샘플 토큰 순서에 맞춰 매핑)
         tar_boxes = extract_boxes_from_json_to_evalboxes(json_path, scene_sample_tokens)
         if tar_boxes and nusc is not None and scene_sample_tokens:
             tar_boxes = add_ego_pose(nusc, tar_boxes)
 
-        for idx, current_sample_token in tqdm(enumerate(scene_sample_tokens), 
-                                                total=len(scene_sample_tokens),
-                                                desc=f"Box pose {bp_idx+1}/{len(box_poses_files)} 처리중",
-                                                leave=False):
+        inner = tqdm(scene_sample_tokens, desc="Samples", position=1, leave=False, dynamic_ncols=True)
+        for idx, current_sample_token in enumerate(inner):
             ctx = sample_contexts[current_sample_token]
             sample_idx = ctx['idx']
             sample_output_dir = ctx['output_dir']
@@ -825,7 +824,7 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
                 filtered_pred_boxes = [b for b in filtered_pred_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
                 filtered_gt_boxes = [b for b in filtered_gt_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
 
-            print(f"filtered_tar_boxes: {len(filtered_tar_boxes)}, filtered_pred_boxes: {len(filtered_pred_boxes)}, filtered_gt_boxes: {len(filtered_gt_boxes)}")
+            # print(f"filtered_tar_boxes: {len(filtered_tar_boxes)}, filtered_pred_boxes: {len(filtered_pred_boxes)}, filtered_gt_boxes: {len(filtered_gt_boxes)}")
             if len(filtered_tar_boxes) > 0:
                 geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_tar_boxes,(1.0, 0.0, 0.0)))
             if len(filtered_pred_boxes) > 0:
@@ -854,7 +853,7 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
 
     print(f"\n🎉 모든 애니메이션 생성 완료! 결과: {output_dir}")
 
-    return  # 기존 로직 실행 방지
+    return
 
 
 def add_text_overlay_to_image(image_path: str, scene_name: str, frame_idx: int, 
