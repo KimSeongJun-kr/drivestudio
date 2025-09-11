@@ -1089,9 +1089,8 @@ def main() -> None:
     parser.add_argument(
         "--init_boxes",
         type=str,
-        default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/sample_annotation_centerpoint_pred.json',
-        # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
-        # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
+        default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/boxes_noise_bias.json',
+        # default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/boxes_centerpoint.json',
         help="Path to control boxes json file",
     )
     parser.add_argument(
