@@ -341,7 +341,7 @@ def find_files_with_name(directory: str, filename: str) -> List[str]:
 
 
 def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
-                      config, nusc: NuScenes, target_path: str) -> Dict[str, float]:
+                      config, nusc: NuScenes, output_dir: str) -> Dict[str, float]:
     """3D 바운딩 박스 평가를 수행합니다.
     
     Args:
@@ -426,7 +426,6 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes,
     metrics_summary = metrics.serialize()
 
     # Dump the metric data, meta and metrics to disk.
-    output_dir = Path(target_path).parents[0]
     with open(os.path.join(output_dir, 'metrics_summary.json'), 'w') as f:
         json.dump(metrics_summary, f, indent=2)
     with open(os.path.join(output_dir, 'metrics_details.json'), 'w') as f:
@@ -696,10 +695,12 @@ def main() -> None:
         # Perform evaluation
         if args.verbose:
             print(f"\n    Performing target evaluation...")
-        eval_results = perform_evaluation(final_gt_evalboxes, final_target_evalboxes, config, nusc, target_file)
+        output_dir = Path(target_file).parents[0]
+        eval_results = perform_evaluation(final_gt_evalboxes, final_target_evalboxes, config, nusc, output_dir)
         if args.verbose:
             print(f"\n    Performing control evaluation...")
-        ctrl_eval_results = perform_evaluation(final_gt_evalboxes, final_ctrl_evalboxes, config, nusc, args.ctrl)
+        output_dir = Path(args.ctrl).parents[0]
+        ctrl_eval_results = perform_evaluation(final_gt_evalboxes, final_ctrl_evalboxes, config, nusc, output_dir)
 
         # Store results
         # Get parent directory name (1st level up from file)

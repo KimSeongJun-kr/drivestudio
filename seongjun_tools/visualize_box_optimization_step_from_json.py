@@ -8,7 +8,6 @@ from pyquaternion import Quaternion
 import open3d as o3d
 from open3d.visualization import rendering
 from open3d.visualization.rendering import Camera as O3DCamera  # type: ignore
-o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Warning)
 
 import torch
 import glob
@@ -1062,13 +1061,13 @@ def main() -> None:
     parser.add_argument(
         "--box_poses_dir",
         type=str,
-        default="/workspace/drivestudio/output/test/test/box_poses",
+        default="/workspace/drivestudio/output/test/seq03_no_st/box_poses",
         help="Directory containing box pose JSON files (box_poses_*.json)"
     )
     parser.add_argument(
         "--scene_name",
         type=str,
-        default='scene-0103',
+        default='scene-0655',
         help="Scene name to animate boxes optimization (e.g., 'scene-0061', 'scene-0103', 'scene-0553', 'scene-0655', "
                                                             "'scene-0757', 'scene-0796', 'scene-0916', 'scene-1077', "
                                                             "'scene-1094', 'scene-1100')",

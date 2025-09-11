@@ -53,12 +53,6 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="detection_score 기본값",
     )
-    parser.add_argument(
-        "--default_name",
-        type=str,
-        default="car",
-        help="매핑되지 않는 class_name의 기본 detection_name",
-    )
     return parser.parse_args()
 
 
@@ -123,7 +117,6 @@ def convert_instances_to_predictions(
     instances_info: Dict[str, Any],
     instance_to_sample_tokens: Dict[str, List[str]],
     score: float,
-    default_name: str,
 ) -> Dict[str, Any]:
     meta = {"use_camera": False, "use_lidar": True}
     results: Dict[str, List[Dict[str, Any]]] = {}
@@ -197,7 +190,7 @@ def convert_instances_to_predictions(
             if not sample_token:
                 raise ValueError(f"인스턴스 {inst_token}의 k={k} 위치에서 sample_token이 비어있습니다.")
 
-            det_name = DETECTION_MAPPING.get(class_name, default_name)
+            det_name = DETECTION_MAPPING.get(class_name, "")
 
             pred = {
                 "sample_token": sample_token,
@@ -282,7 +275,6 @@ def main() -> None:
         instances_info=data,
         instance_to_sample_tokens=instance_to_sample_tokens,
         score=args.score,
-        default_name=args.default_name,
     )
 
     save_json(prediction, str(output_path))
