@@ -25,6 +25,7 @@ trainer:
       rgb_w: 0.8
       ssim_w: 0.2
       start_from: 0
+      opacity_threshold: 0
     # mask:
     #   w: 0.05
     #   opacity_loss_type: bce # choose from [bce, safe_bce]
@@ -34,7 +35,7 @@ trainer:
     #   normalize: False # whether to normalize depth loss
     #   loss_type: l1 # choose from ["l1", "l2"]
     expand_depth:
-      w: 0.1
+      w: 0.001
       inverse_depth: False # whether to use inverse depth, NOTE that when set to True, must normalize=True
       normalize: False # whether to normalize depth loss
       loss_type: l1 # choose from ["l1", "l2"]
@@ -117,7 +118,7 @@ model:
         max_gauss_ratio: 10.
       temporal_smooth_reg:
         smooth_range: 5 # no ablation
-        start_from: 15000
+        start_from: 0
         trans:
           w: 0.01 # optimal value may vary
         rot:

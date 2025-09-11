@@ -194,3 +194,5 @@ preprocessing_package/*
 !preprocessing_package/.gitkeep
 configs/experiments/*
 configs/datasets/nuscenes/experiments/*
+
+tmp/*
