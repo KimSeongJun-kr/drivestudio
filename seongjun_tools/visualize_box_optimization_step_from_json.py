@@ -707,7 +707,7 @@ def _get_scene_sample_tokens_chronologically(nusc: 'NuScenes', scene_name: str) 
 def create_all_sample_animations(box_poses_dir: str, output_dir: str,
                                 scene_name: Optional[str] = None,
                                 sample_token: Optional[str] = None,
-                                pred_boxes: Optional['EvalBoxes'] = None,
+                                init_boxes: Optional['EvalBoxes'] = None,
                                 gt_boxes: Optional['EvalBoxes'] = None,
                                 show_lidar: bool = False,
                                 nusc: Optional['NuScenes'] = None,
@@ -812,25 +812,25 @@ def create_all_sample_animations(box_poses_dir: str, output_dir: str,
                 geometries.append(lidar_pcd)
 
             filtered_tar_boxes = tar_boxes[current_sample_token]
-            filtered_pred_boxes = pred_boxes[current_sample_token]
+            filtered_init_boxes = init_boxes[current_sample_token]
             filtered_gt_boxes = gt_boxes[current_sample_token]
 
             # instance_token 교집합으로 세 집합 모두 필터링
             tar_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_tar_boxes if getattr(b, 'instance_token', '')}
-            pred_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_pred_boxes if getattr(b, 'instance_token', '')}
+            init_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_init_boxes if getattr(b, 'instance_token', '')}
             gt_inst_tokens = {getattr(b, 'instance_token', '') for b in filtered_gt_boxes if getattr(b, 'instance_token', '')}
-            common_inst_tokens = tar_inst_tokens & pred_inst_tokens & gt_inst_tokens
+            common_inst_tokens = tar_inst_tokens & init_inst_tokens & gt_inst_tokens
 
             if common_inst_tokens:
                 filtered_tar_boxes = [b for b in filtered_tar_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
-                filtered_pred_boxes = [b for b in filtered_pred_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
+                filtered_init_boxes = [b for b in filtered_init_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
                 filtered_gt_boxes = [b for b in filtered_gt_boxes if getattr(b, 'instance_token', '') in common_inst_tokens]
 
             # print(f"filtered_tar_boxes: {len(filtered_tar_boxes)}, filtered_pred_boxes: {len(filtered_pred_boxes)}, filtered_gt_boxes: {len(filtered_gt_boxes)}")
             if len(filtered_tar_boxes) > 0:
                 geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_tar_boxes,(1.0, 0.0, 0.0)))
-            if len(filtered_pred_boxes) > 0:
-                geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_pred_boxes, (0.0, 0.0, 1.0)))
+            if len(filtered_init_boxes) > 0:
+                geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_init_boxes, (0.0, 0.0, 1.0)))
             if len(filtered_gt_boxes) > 0:
                 geometries.extend(_add_boxes_to_geometries_from_evalboxes(filtered_gt_boxes, (0.0, 0.0, 0.0)))
 
@@ -1142,7 +1142,7 @@ def main() -> None:
     
     # NuScenes 초기화 (scene_name, pred_boxes, gt_boxes, LiDAR 기능용)
     nusc = None
-    pred_boxes = None
+    init_boxes = None
     gt_boxes = None
     
     print("📊 NuScenes 데이터 로딩 중...")
@@ -1152,15 +1152,15 @@ def main() -> None:
     # Load prediction boxes if provided
     if args.init_boxes and os.path.exists(args.init_boxes):
         print(f"📊 Control boxes 로딩 중: {args.init_boxes}")
-        pred_boxes, _ = load_prediction(args.init_boxes, 
+        init_boxes, _ = load_prediction(args.init_boxes, 
                                         config.max_boxes_per_sample, 
                                         DetectionBox,
                                         verbose=args.verbose)
-        infer_pred_boxes = EvalBoxes()
-        for box in pred_boxes.all:
+        infer_init_boxes = EvalBoxes()
+        for box in init_boxes.all:
             if box.gt_data == 0 or box.gt_data == -1:
-                infer_pred_boxes.add_boxes(box.sample_token, [box])
-        pred_boxes = add_ego_pose(nusc, infer_pred_boxes)
+                infer_init_boxes.add_boxes(box.sample_token, [box])
+        init_boxes = add_ego_pose(nusc, infer_init_boxes)
     
     # Load ground truth boxes if provided
     print(f"📊 Ground truth boxes 로딩 중")
@@ -1180,7 +1180,7 @@ def main() -> None:
         output_dir=args.output_dir,
         scene_name=args.scene_name,
         sample_token=args.sample_token,
-        pred_boxes=pred_boxes,
+        init_boxes=init_boxes,
         gt_boxes=gt_boxes,
         show_lidar=args.show_lidar,
         nusc=nusc,
