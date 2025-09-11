@@ -30,8 +30,34 @@ from seongjun_tools.generate_selected_instances import filter_boxes_by_common_sc
 from seongjun_tools.evaluate_3dbb import filter_eval_boxes, filter_boxes_by_scene
 from seongjun_tools.utils.detection.data_classes import DetectionBox, DetectionMetricDataList, DetectionMetrics, DetectionMetricData
 from seongjun_tools.utils.loaders import load_gt, load_prediction, add_center_dist
-from datasets.nuscenes.nuscenes_sourceloader import OBJECT_CLASS_NODE_MAPPING
 from datasets.base.scene_dataset import ModelType
+
+# from datasets.nuscenes.nuscenes_sourceloader import OBJECT_CLASS_NODE_MAPPING
+OBJECT_CLASS_NODE_MAPPING = {
+    # Rigid objects (vehicles)
+    "vehicle.bus.bendy": ModelType.RigidNodes,
+    "vehicle.bus.rigid": ModelType.RigidNodes,
+    "vehicle.car": ModelType.RigidNodes,
+    "vehicle.construction": ModelType.RigidNodes,
+    "vehicle.emergency.ambulance": ModelType.RigidNodes,
+    "vehicle.emergency.police": ModelType.RigidNodes,
+    "vehicle.motorcycle": ModelType.RigidNodes,
+    "vehicle.trailer": ModelType.RigidNodes,
+    "vehicle.truck": ModelType.RigidNodes,
+
+    # Humans (SMPL model)
+    "human.pedestrian.adult": ModelType.SMPLNodes,
+    "human.pedestrian.child": ModelType.SMPLNodes,
+    "human.pedestrian.construction_worker": ModelType.SMPLNodes,
+    "human.pedestrian.police_officer": ModelType.SMPLNodes,
+
+    # Potentially deformable objects
+    "human.pedestrian.personal_mobility": ModelType.DeformableNodes,
+    "human.pedestrian.stroller": ModelType.DeformableNodes,
+    "human.pedestrian.wheelchair": ModelType.DeformableNodes,
+    "animal": ModelType.DeformableNodes,
+    "vehicle.bicycle": ModelType.DeformableNodes
+}
 
 detection_mapping = {
     'movable_object.barrier': 'barrier',
@@ -340,7 +366,7 @@ def find_files_with_name(directory: str, filename: str) -> List[str]:
 
 
 def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens: List[str],
-                      config, nusc: NuScenes, target_path: str = '') -> Dict[str, float]:
+                      config, nusc: NuScenes, output_dir: str = '') -> Dict[str, float]:
     """3D 바운딩 박스 평가를 수행합니다.
     
     Args:
@@ -369,7 +395,7 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
     dist_th = 1.0
 
     class_wise_err_data_list: Dict[str, Dict[str, List[float]]] = {}    
-    instance_wise_err_data_list: Dict[int, Tuple[str, Dict[str, List[float]], EvalBoxes, EvalBoxes]] = {}
+    instance_wise_err_data_list: Dict[str, Tuple[str, Dict[str, List[float]], EvalBoxes, EvalBoxes]] = {}
     fields = ('trans_err', 'vel_err', 'scale_err', 'orient_err', 'attr_err', 'conf')
     nodeclass_wise_err_data_list = {
         name: {f: [] for f in fields}
@@ -397,7 +423,7 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
 
         instance_idx = tar_boxes_instance.all[0].instance_idx
         instance_wise_metric_data_list.set(str(instance_idx), dist_th, metric_data)
-        instance_wise_err_data_list[instance_idx] = (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance)
+        instance_wise_err_data_list[instance_token] = (instance_idx, raw_err_data, gt_boxes_instance, tar_boxes_instance)
 
         class_name = tar_boxes_instance.all[0].detection_name
         inv_key = detection_mapping_inv.get(class_name)
@@ -413,6 +439,7 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
     metrics_class_wise = DetectionMetrics(config)
     metrics_instance_wise = DetectionMetrics(config)
 
+    all_tp_errors = {metric_name: [] for metric_name in TP_METRICS}
     for node_type, raw_err_data in nodeclass_wise_err_data_list.items():
         # ap = calc_ap(raw_err_data, config.min_recall, config.min_precision)
         # metrics_class_wise.add_label_ap(node_type, dist_th, ap)
@@ -421,15 +448,18 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
             if metric_name not in raw_err_data:
                 tp = np.nan
                 rmse = np.nan
-            elif metric_name not in raw_err_data:
-                tp = np.nan
-                rmse = np.nan
             else:
                 tp = float(np.mean(raw_err_data[metric_name]))
                 rmse = float(np.sqrt(np.mean(np.square(raw_err_data[metric_name]))))
-                # print(f"🔍 {node_type} {metric_name} MAE: {tp}, std_dev: {std_dev}")
+                all_tp_errors[metric_name].extend(raw_err_data[metric_name])
+                # print(f"🔍 {node_type} {metric_name} MAE: {tp}, rmse: {rmse}")
             metrics_class_wise.add_label_tp(node_type, metric_name, tp)
             metrics_class_wise.add_label_tp_RMSE(node_type, metric_name, rmse)
+    for metric_name in TP_METRICS:
+        all_tp = float(np.mean(all_tp_errors[metric_name]))
+        all_rmse = float(np.sqrt(np.mean(np.square(all_tp_errors[metric_name]))))
+        metrics_class_wise.add_label_tp('all', metric_name, all_tp)
+        metrics_class_wise.add_label_tp_RMSE('all', metric_name, all_rmse)
 
     # for class_name in config.class_names:
     #     # Compute APs.
@@ -456,7 +486,8 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
     #         metrics.add_label_tp(class_name, metric_name, tp)
     #         metrics.add_label_tp_RMSE(class_name, metric_name, rmse)
 
-    for instance_idx, (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.items():
+    all_tp_errors = {metric_name: [] for metric_name in TP_METRICS}
+    for instance_token, (instance_idx, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.items():
         for metric_name in TP_METRICS:
             if metric_name not in raw_err_data:
                 tp = np.nan
@@ -468,17 +499,21 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
                 tp = float(np.mean(raw_err_data[metric_name]))
                 rmse = float(np.sqrt(np.mean(np.square(raw_err_data[metric_name]))))
                 # print(f"🔍 {instance_idx} {metric_name} MAE: {tp}, std_dev: {std_dev}")
-            metrics_instance_wise.add_label_tp(str(instance_idx), metric_name, tp)
-            metrics_instance_wise.add_label_tp_RMSE(str(instance_idx), metric_name, rmse)
-
+                all_tp_errors[metric_name].extend(raw_err_data[metric_name])
+            metrics_instance_wise.add_label_tp(str(instance_token), metric_name, tp)
+            metrics_instance_wise.add_label_tp_RMSE(str(instance_token), metric_name, rmse)
+    for metric_name in TP_METRICS:
+        all_tp = float(np.mean(all_tp_errors[metric_name]))
+        all_rmse = float(np.sqrt(np.mean(np.square(all_tp_errors[metric_name]))))
+        metrics_instance_wise.add_label_tp('all', metric_name, all_tp)
+        metrics_instance_wise.add_label_tp_RMSE('all', metric_name, all_rmse)
 
     # Get metrics summary
     metrics_summary_class_wise = metrics_class_wise.serialize()
     metrics_summary_instance_wise = metrics_instance_wise.serialize()
 
-    if target_path != '':
+    if output_dir != '':
         # Dump the metric data, meta and metrics to disk.
-        output_dir = Path(target_path).parents[0]
         with open(os.path.join(output_dir, 'metrics_details.json'), 'w') as f:
             json.dump(instance_wise_metric_data_list.serialize(), f, indent=2)
         with open(os.path.join(output_dir, 'metrics_summmary_class_wise.json'), 'w') as f:
@@ -488,13 +523,13 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
 
 
         instance_wise_frame_err_data = {}
-        for instance_idx, (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.items():
+        for instance_token, (instance_idx, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.items():
             frames = []
             for sample_token in raw_err_data['sample_tokens']:
                 sample_idx = sample_tokens.index(sample_token)
                 frames.append(sample_idx * 5)
 
-            instance_wise_frame_err_data[instance_idx] = {
+            instance_wise_frame_err_data[instance_token] = {
                 'frames': frames,
                 'trans_err': raw_err_data['trans_err'],
                 'vel_err': raw_err_data['vel_err'],
@@ -512,21 +547,21 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
 
 
     num_matched_boxes = 0
-    for (instance_token, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.values():
+    for (instance_idx, raw_err_data, gt_boxes_instance, tar_boxes_instance) in instance_wise_err_data_list.values():
         if 'trans_err' in raw_err_data:
             num_matched_boxes += len(raw_err_data['trans_err'])
 
     return {
-        'ATE': metrics_summary_class_wise['tp_errors']['trans_err'],
-        'AOE': metrics_summary_class_wise['tp_errors']['orient_err'],
-        'ASE': metrics_summary_class_wise['tp_errors']['scale_err'],
+        'ATE': metrics_summary_class_wise['label_tp_MAE_errors']['all']['trans_err'],
+        'AOE': metrics_summary_class_wise['label_tp_MAE_errors']['all']['orient_err'],
+        'ASE': metrics_summary_class_wise['label_tp_MAE_errors']['all']['scale_err'],
         # 'mAP': metrics_summary_class_wise['mean_ap'],
         # 'NDS': metrics_summary_class_wise['nd_score'],
         # 'AVE': metrics_summary_class_wise['tp_errors']['vel_err'],
         # 'AAE': metrics_summary_class_wise['tp_errors']['attr_err'],
-        'ATE_RMSE': metrics_summary_class_wise['tp_RMSE_errors']['trans_err'],
-        'AOE_RMSE': metrics_summary_class_wise['tp_RMSE_errors']['orient_err'],
-        'ASE_RMSE': metrics_summary_class_wise['tp_RMSE_errors']['scale_err'],
+        'ATE_RMSE': metrics_summary_class_wise['label_tp_RMSE_errors']['all']['trans_err'],
+        'AOE_RMSE': metrics_summary_class_wise['label_tp_RMSE_errors']['all']['orient_err'],
+        'ASE_RMSE': metrics_summary_class_wise['label_tp_RMSE_errors']['all']['scale_err'],
         # 'AVE_RMSE': metrics_summary_class_wise['tp_RMSE_errors']['vel_err'],
         # 'AAE_RMSE': metrics_summary_class_wise['tp_RMSE_errors']['attr_err'],
         'num_tar_boxes': len(tar_boxes.all),
@@ -751,12 +786,14 @@ def main() -> None:
         # Perform evaluation
         if args.verbose:
             print(f"\n    Performing target evaluation...")
-        eval_results = perform_evaluation(gt_boxes, target_boxes, scene_sample_tokens, config, nusc, target_file)
+        output_dir = Path(target_file).parents[0]
+        eval_results = perform_evaluation(gt_boxes, target_boxes, scene_sample_tokens, config, nusc, output_dir)
         if args.verbose:
             print(f"\n    Performing control evaluation...")
 
+        output_dir = Path(args.ctrl).parents[0]
         ctrl_boxes_matched = match_boxes(target_boxes, ctrl_boxes)
-        ctrl_eval_results = perform_evaluation(gt_boxes, ctrl_boxes_matched, scene_sample_tokens, config, nusc, args.ctrl)
+        ctrl_eval_results = perform_evaluation(gt_boxes, ctrl_boxes_matched, scene_sample_tokens, config, nusc, output_dir)
 
         # Store results
         # Get parent directory name (1st level up from file)
