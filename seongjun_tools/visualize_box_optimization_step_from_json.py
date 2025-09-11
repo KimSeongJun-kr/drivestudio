@@ -8,6 +8,8 @@ from pyquaternion import Quaternion
 import open3d as o3d
 from open3d.visualization import rendering
 from open3d.visualization.rendering import Camera as O3DCamera  # type: ignore
+o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Warning)
+
 import torch
 import glob
 import re
@@ -683,6 +685,7 @@ def _get_scene_sample_tokens_chronologically(nusc: 'NuScenes', scene_name: str) 
     scene_token = None
     for scene in nusc.scene:
         if scene['name'] == scene_name:
+            print(f"🎯 Scene '{scene_name}'을 찾았습니다")
             scene_token = scene['token']
             break
     
@@ -1015,8 +1018,8 @@ def find_boxpose_files(boxpose_dir: str) -> List[Tuple[int, str]]:
     boxpose_files.sort(key=lambda x: x[0])
 
     print(f"📁 찾은 box pose 파일들 ({len(boxpose_files)}개):")
-    for iteration, file_path in boxpose_files:
-        print(f"  - Iteration {iteration:06d}: {os.path.basename(file_path)}")
+    # for iteration, file_path in boxpose_files:
+    #     print(f"  - Iteration {iteration:06d}: {os.path.basename(file_path)}")
 
     return boxpose_files
 
@@ -1085,18 +1088,12 @@ def main() -> None:
     
     # pred_boxes, gt_boxes 관련 인자들
     parser.add_argument(
-        "--pred_boxes",
+        "--init_boxes",
         type=str,
         default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/sample_annotation_centerpoint_pred.json',
         # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise/mini/001/instances/instances_info_pred.json',
         # default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
-        help="Path to prediction boxes json file",
-    )
-    parser.add_argument(
-        "--gt_boxes",
-        type=str,
-        default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_gt_pred_selected_src.json',
-        help="Path to ground truth boxes json file",
+        help="Path to control boxes json file",
     )
     parser.add_argument(
         "--version",
@@ -1149,29 +1146,27 @@ def main() -> None:
     pred_boxes = None
     gt_boxes = None
     
-    if args.scene_name or args.pred_boxes or args.gt_boxes or args.show_lidar:
-        print("📊 NuScenes 데이터 로딩 중...")
-        nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=args.verbose)
-        config = config_factory('detection_cvpr_2019')
-        
-        # Load prediction boxes if provided
-        if args.pred_boxes and os.path.exists(args.pred_boxes):
-            print(f"📊 Prediction boxes 로딩 중: {args.pred_boxes}")
-            pred_boxes, _ = load_prediction(args.pred_boxes, 
-                                           config.max_boxes_per_sample, 
-                                           DetectionBox,
-                                           verbose=args.verbose)
-            infer_pred_boxes = EvalBoxes()
-            for box in pred_boxes.all:
-                if box.gt_data == 0 or box.gt_data == -1:
-                    infer_pred_boxes.add_boxes(box.sample_token, [box])
-            pred_boxes = add_ego_pose(nusc, infer_pred_boxes)
-        
-        # Load ground truth boxes if provided
-        if args.gt_boxes and os.path.exists(args.gt_boxes):
-            print(f"📊 Ground truth boxes 로딩 중: {args.gt_boxes}")
-            gt_boxes, _ = load_gt(nusc, eval_set_map[args.version], DetectionBox, verbose=args.verbose)
-            gt_boxes = add_ego_pose(nusc, gt_boxes)
+    print("📊 NuScenes 데이터 로딩 중...")
+    nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=args.verbose)
+    config = config_factory('detection_cvpr_2019')
+    
+    # Load prediction boxes if provided
+    if args.init_boxes and os.path.exists(args.init_boxes):
+        print(f"📊 Control boxes 로딩 중: {args.init_boxes}")
+        pred_boxes, _ = load_prediction(args.init_boxes, 
+                                        config.max_boxes_per_sample, 
+                                        DetectionBox,
+                                        verbose=args.verbose)
+        infer_pred_boxes = EvalBoxes()
+        for box in pred_boxes.all:
+            if box.gt_data == 0 or box.gt_data == -1:
+                infer_pred_boxes.add_boxes(box.sample_token, [box])
+        pred_boxes = add_ego_pose(nusc, infer_pred_boxes)
+    
+    # Load ground truth boxes if provided
+    print(f"📊 Ground truth boxes 로딩 중")
+    gt_boxes, _ = load_gt(nusc, eval_set_map[args.version], DetectionBox, verbose=args.verbose)
+    gt_boxes = add_ego_pose(nusc, gt_boxes)
     
     # 애니메이션 생성
     if not os.path.exists(args.box_poses_dir):
