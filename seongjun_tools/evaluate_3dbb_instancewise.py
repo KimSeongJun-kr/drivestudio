@@ -316,7 +316,7 @@ def extract_boxes_from_json_to_evalboxes(json_path: str, sample_tokens: List[str
                         print(f"❌ 박스 정보가 딕셔너리가 아닙니다: {type(box)}")
                         continue
                     detection_name = box.get('detection_name', '')
-                    if detection_name == 'human.pedestrian.personal_mobility':
+                    if detection_name == 'human.pedestrian.personal_mobility' or detection_name == '':
                         continue
                     
                     # box 정보를 DetectionBox로 변환

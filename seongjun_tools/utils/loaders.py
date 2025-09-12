@@ -10,7 +10,8 @@ import tqdm
 from pyquaternion import Quaternion
 
 from nuscenes import NuScenes
-from nuscenes.eval.common.data_classes import EvalBoxes
+from seongjun_tools.utils.common.data_classes import EvalBoxes
+# from nuscenes.eval.common.data_classes import EvalBoxes
 # from nuscenes.eval.detection.data_classes import DetectionBox
 from seongjun_tools.utils.detection.data_classes import DetectionBox
 from nuscenes.eval.detection.utils import category_to_detection_name
