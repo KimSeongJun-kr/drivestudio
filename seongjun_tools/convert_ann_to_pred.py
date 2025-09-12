@@ -60,10 +60,45 @@ def load_attribute_map(nusc_raw_root: str) -> Dict[str, str]:
     return {rec.get("token", ""): rec.get("name", "") for rec in attrs if rec.get("token")}
 
 
+def load_instance_to_category_map(nusc_raw_root: str) -> Dict[str, str]:
+    """nuScenes instance.json과 category.json에서 instance_token -> category_name 매핑을 로드합니다.
+
+    Args:
+        nusc_raw_root: nuScenes raw JSON들이 위치한 루트 (예: /path/to/v1.0-mini)
+
+    Returns:
+        Dict[str, str]: instance_token -> category_name 매핑
+    """
+    category_json = os.path.join(nusc_raw_root, "category.json")
+    instance_json = os.path.join(nusc_raw_root, "instance.json")
+
+    if not (os.path.exists(category_json) and os.path.exists(instance_json)):
+        return {}
+
+    with open(category_json, 'r') as f:
+        categories = json.load(f)
+    token_to_category_name: Dict[str, str] = {
+        rec.get("token", ""): rec.get("name", "") for rec in categories if rec.get("token")
+    }
+
+    with open(instance_json, 'r') as f:
+        instances = json.load(f)
+
+    instance_to_category: Dict[str, str] = {}
+    for rec in instances:
+        inst_token = rec.get("token", "")
+        cat_token = rec.get("category_token", "")
+        if inst_token:
+            instance_to_category[inst_token] = token_to_category_name.get(cat_token, "")
+
+    return instance_to_category
+
+
 def write_prediction_file(
     ann_list: List[Dict[str, Any]],
     output_path: str,
     attribute_map: Dict[str, str],
+    instance_to_category_map: Dict[str, str],
     non_gt_pair_set: Optional[Set[Tuple[str, str]]],
 ) -> None:
     """annotation 딕셔너리 리스트를 NuScenes prediction 포맷의 JSON 파일로 저장합니다.
@@ -96,14 +131,15 @@ def write_prediction_file(
         else:
             raise Exception("Error: GT annotations must not have more than one attribute!")
 
-        # detection_name 매핑 (없으면 car)
-        category_name = ann.get("category_name", "")
-        detection_name = DETECTION_MAPPING.get(str(category_name), "car")
-
         translation = [float(x) for x in ann.get("translation", [0.0, 0.0, 0.0])]
         size = [float(x) for x in ann.get("size", [0.0, 0.0, 0.0])]
         rotation = [float(x) for x in ann.get("rotation", [1.0, 0.0, 0.0, 0.0])]
         instance_token = str(ann.get("instance_token", ""))
+
+        # instance_token 기반 category_name 우선 사용 (없으면 annotation의 category_name 백업)
+        category_name = instance_to_category_map.get(instance_token, ann.get("category_name", ""))
+        # detection_name 매핑
+        detection_name = DETECTION_MAPPING.get(str(category_name), "")
 
         # 겹침 여부에 따른 gt_data 결정
         if non_gt_pair_set is not None:
@@ -158,11 +194,12 @@ def main() -> None:
         "--nusc_raw_root",
         type=str,
         default="/workspace/drivestudio/data/nuscenes/raw/v1.0-mini",
-        help="nuScenes raw JSON 루트 경로 (attribute.json 등)",
+        help="nuScenes raw JSON 루트 경로 (attribute.json, instance.json, category.json)",
     )
     parser.add_argument(
         "--non_gt_check_pred_file",
         type=str,
+        # default=None,
         default="/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/sample_annotation_centerpoint_only_matched_pred.json",
         help="nuScenes raw JSON 루트 경로 (attribute.json 등)",
     )
@@ -183,6 +220,8 @@ def main() -> None:
 
     # attribute 매핑 로드
     attribute_map = load_attribute_map(args.nusc_raw_root)
+    # instance_token -> category_name 매핑 로드
+    instance_to_category_map = load_instance_to_category_map(args.nusc_raw_root)
 
     # 비교용 prediction 파일에서 (instance_token, sample_token) 쌍 수집
     non_gt_pair_set = None
@@ -202,7 +241,7 @@ def main() -> None:
 
     # prediction 파일로 변환하여 저장
     print(f"prediction 파일로 변환 중: {output_path}")
-    write_prediction_file(annotations, str(output_path), attribute_map, non_gt_pair_set)
+    write_prediction_file(annotations, str(output_path), attribute_map, instance_to_category_map, non_gt_pair_set)
     print(f"변환 완료: {output_path}")
 
 
