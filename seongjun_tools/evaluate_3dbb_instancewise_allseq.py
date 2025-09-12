@@ -134,7 +134,7 @@ def main() -> None:
     parser.add_argument(
         "--tar",
         type=str,
-        default='/workspace/drivestudio/output/box_experiments_0910',
+        default='/workspace/drivestudio/output/0909_official_noise/base',
         help="Directory to search for target files",
     )
     parser.add_argument(
@@ -199,7 +199,7 @@ def main() -> None:
     for target_file in target_files:
         seq_index = None
         for part in reversed(Path(target_file).parts):
-            m = re.search(r"_seq(\d+)$", part)
+            m = re.search(r"_seq_(\d+)$", part)
             if m is not None:
                 seq_index = int(m.group(1))
                 break
@@ -247,35 +247,21 @@ def main() -> None:
     gt_boxes, tar_boxes = filter_boxes_by_common_scenes(nusc, gt_boxes, tar_boxes)
     ctrl_boxes, tar_boxes = filter_boxes_by_common_scenes(nusc, ctrl_boxes, tar_boxes)
 
-    # Prepare results storage
-    results = []
-           
-    # Extract boxes from JSON file
-
     if len(tar_boxes.sample_tokens) == 0:
         print(f"❌ No boxes extracted from {args.tar}")
         return
-    
-    # Perform correspondence matching
-    if args.verbose:
-        print("🔄 Performing correspondence matching...")            
             
     # Perform evaluation
     if args.verbose:
         print(f"\n    Performing target evaluation...")
-
-
     eval_results = perform_evaluation(gt_boxes, tar_boxes, tar_boxes.sample_tokens, config, nusc, args.tar)
+
     if args.verbose:
         print(f"\n    Performing control evaluation...")
-
-    output_dir = Path(args.ctrl).parents[0]
+    output_dir = os.path.join(Path(args.ctrl).parents[0], 'eval_total')
+    os.makedirs(output_dir, exist_ok=True)
     ctrl_boxes_matched = match_boxes(tar_boxes, ctrl_boxes)
     ctrl_eval_results = perform_evaluation(gt_boxes, ctrl_boxes_matched, ctrl_boxes_matched.sample_tokens, config, nusc, output_dir)
-
-    # Extract iteration number from filename and parse metrics
-    match = re.search(r'(\d+)', args.name)
-    iteration_number = int(match.group(1)) if match else 80000
 
     result_entry = {
         'file_path': args.tar,
@@ -283,19 +269,58 @@ def main() -> None:
         'directory': args.tar,
         **eval_results,
     }
+
+    # Prepare results storage
+    results = []
     results.append(result_entry)
     
     if args.verbose:
         print(f"✅ Evaluation completed for {args.tar}")
         print(f"   ATE: {eval_results['ATE']:.4f}, AOE: {eval_results['AOE']:.4f}, ASE: {eval_results['ASE']:.4f}")
     
+    for target_file, scene_name in target_file_scene_pairs:
+        target_file_scene = [(target_file, scene_name)]
+        tar_boxes = extract_boxes_from_json_to_evalboxes_multiple(nusc, target_file_scene)
+
+        if len(tar_boxes.sample_tokens) == 0:
+            print(f"❌ No boxes extracted from {args.tar}")
+            return
+                
+        # Perform evaluation
+        output_dir = Path(target_file).parents[0]
+        if args.verbose:
+            print(f"\n    Performing target evaluation...")
+        eval_results = perform_evaluation(gt_boxes, tar_boxes, tar_boxes.sample_tokens, config, nusc, str(output_dir))
+
+        if args.verbose:
+            print(f"\n    Performing control evaluation...")
+        output_dir = os.path.join(Path(args.ctrl).parents[0], 'eval_' + scene_name)
+        os.makedirs(output_dir, exist_ok=True)
+        ctrl_boxes_matched = match_boxes(tar_boxes, ctrl_boxes)
+        ctrl_eval_results = perform_evaluation(gt_boxes, ctrl_boxes_matched, ctrl_boxes_matched.sample_tokens, config, nusc, output_dir)
+
+        path_parts = Path(target_file).parts
+        try: 
+            directory = path_parts[-3]
+        except:
+            directory = Path(target_file).parents[1]
+
+        result_entry = {
+            'file_path': target_file,
+            'file_name': os.path.basename(target_file),
+            'directory': directory,
+            **eval_results,
+        }
+        results.append(result_entry)
+
+
     # Save results to CSV
     if results:
         df = pd.DataFrame(results)
         
         # Set output path
         if args.output is None:
-            output_path = os.path.join(args.tar, f"instance_wise_eval_{args.name.replace('.', '_')}.csv")
+            output_path = os.path.join(args.tar, f"total_instance_wise_eval_{args.name.replace('.', '_')}.csv")
         else:
             output_path = args.output
         
@@ -304,7 +329,6 @@ def main() -> None:
         
     else:
         print("❌ No results to save")
-
 
 if __name__ == "__main__":
     main()

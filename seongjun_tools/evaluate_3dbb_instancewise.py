@@ -315,6 +315,9 @@ def extract_boxes_from_json_to_evalboxes(json_path: str, sample_tokens: List[str
                     if not isinstance(box, dict):
                         print(f"❌ 박스 정보가 딕셔너리가 아닙니다: {type(box)}")
                         continue
+                    detection_name = box.get('detection_name', '')
+                    if detection_name == 'human.pedestrian.personal_mobility':
+                        continue
                     
                     # box 정보를 DetectionBox로 변환
                     detection_box = DetectionBox(
@@ -544,6 +547,8 @@ def perform_evaluation(gt_boxes: EvalBoxes, tar_boxes: EvalBoxes, sample_tokens:
             }
         with open(os.path.join(output_dir, 'instance_wise_frame_err_data.json'), 'w') as f:
             json.dump(instance_wise_frame_err_data, f, indent=2)
+            
+        print(f"✅ results saved to {output_dir}")
 
 
     num_matched_boxes = 0
@@ -659,9 +664,8 @@ def main() -> None:
     parser.add_argument(
         "--ctrl",
         type=str,
-        # default='/workspace/drivestudio/output/ceterpoint_pose/results_nusc_matched_pred_class.json',
-        default='/workspace/drivestudio/data/nuscenes/drivestudio_preprocess/processed_10Hz_noise_bias/mini/001/instances/instances_info_pred.json',
-        # default='/workspace/drivestudio/output/box_experiments_0804_eval/prediction/results_tracking.json',
+        default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/boxes_noise_bias.json',
+        # default='/workspace/drivestudio/data/nuscenes/raw/v1.0-mini/boxes_centerpoint.json',
         help="Path to comparison prediction json file",
     )
     parser.add_argument(
